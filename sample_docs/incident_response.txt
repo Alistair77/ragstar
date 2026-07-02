@@ -1,0 +1,39 @@
+Incident Response Runbook
+
+Severity Levels
+
+SEV-1 (Critical): Service outage affecting all users, data breach, or security compromise.
+Response time: Immediate. Team must respond within 5 minutes of alert.
+SLAs: Mitigation within 1 hour, full resolution within 4 hours.
+
+SEV-2 (High): Partial outage affecting a subset of users, degraded performance, or feature unavailability.
+Response time: Within 15 minutes.
+SLAs: Mitigation within 4 hours, full resolution within 24 hours.
+
+SEV-3 (Medium): Minor bugs, cosmetic issues, or non-critical feature degradation.
+Response time: Within 1 business hour.
+SLAs: Mitigation within 24 hours, full resolution within 1 week.
+
+SEV-4 (Low): Questions, documentation requests, or feature inquiries.
+Response time: Within 1 business day.
+SLAs: Acknowledge within 2 business days.
+
+Incident Response Steps
+
+Step 1: Detection and Triage
+When an alert fires or a user reports an issue, the on-call engineer acknowledges the page and assesses severity. Use the runbook to determine if escalation is needed. For SEV-1 and SEV-2 incidents, immediately create a dedicated Slack channel with the naming convention #incident-YYYY-MM-DD-short-description.
+
+Step 2: Containment
+Before investigating root cause, take immediate steps to limit impact. This may include rolling back a deployment, enabling a feature flag to disable a broken feature, scaling up infrastructure, or blocking malicious traffic.
+
+Step 3: Investigation
+Once contained, investigate the root cause. Check logs in Datadog, review recent deployments in GitHub, examine database query performance in RDS Performance Insights, and review error rates in Sentry.
+
+Step 4: Remediation
+Apply the fix. For code issues, submit a pull request with the fix and have it reviewed by at least one other engineer. For infrastructure issues, update Terraform configurations or apply manual fixes through the AWS console.
+
+Step 5: Post-Mortem
+Within 48 hours of an SEV-1 or SEV-2 incident, the incident commander must write a post-mortem document. The post-mortem should include: timeline of events, root cause analysis, impact assessment (number of users affected, revenue impact, downtime duration), action items to prevent recurrence, and a blameless narrative.
+
+On-Call Rotation
+Each engineering team maintains a weekly on-call rotation. Primary on-call handles all pages. Secondary on-call handles escalations and can step in if the primary is already engaged. On-call engineers receive a $200 stipend for the week they are on call. The on-call schedule is managed through PagerDuty.
