@@ -217,7 +217,7 @@ hybrid-rag/
 
 Roughly ordered by learning value per unit effort:
 
-1. **RRF rank-offset bug** 🔴 — in `rrf.py`, BM25 results are added with `rank_offset=len(vector_results)`, so BM25's best hit is treated as rank ~21 instead of rank 1. This systematically penalizes every BM25 result and biases the merge toward vector search. Fix: use `rank_offset=0` for both lists.
+1. ~~**RRF rank-offset bug**~~ ✅ **Fixed** — `rrf.py` originally added BM25 results with `rank_offset=len(vector_results)`, treating BM25's best hit as rank ~21 instead of rank 1 and systematically biasing the merge toward vector search. Both lists now rank from 1, and the unit tests assert that a vector-only doc and a BM25-only doc at the same rank score identically.
 2. **Evaluation** 🟠 — the most valuable RAG skill to learn next. Build a test set of questions with known correct source chunks, measure retrieval hit-rate@5 and answer faithfulness (LLM-as-judge). Turns "it feels better" into "hit-rate went from 60% to 85%."
 3. **Robustness** 🟡 — no retry/backoff on external calls (a network hiccup crashes the request); orphaned vectors linger in Pinecone when docs shrink; ingestion and BM25-index-build independently re-read the raw files and can drift.
 4. **Features** 🟢 — streaming answers, programmatic citation verification, semantic chunking (compare against fixed-size using your eval set), PDF/DOCX loaders.
