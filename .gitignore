@@ -1,0 +1,13 @@
+# Secrets — never commit real API keys
+.env
+
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS
+.DS_Store

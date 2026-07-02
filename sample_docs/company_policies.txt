@@ -1,0 +1,24 @@
+Employee Remote Work Policy
+
+Effective Date: January 15, 2025
+
+1. Eligibility
+Remote work is available to all full-time employees who have completed their 90-day probationary period. Part-time employees may request remote work on a case-by-case basis. Contractors and interns must receive manager and HR approval before working remotely.
+
+2. Work-from-Home Requirements
+Employees working remotely must maintain a dedicated workspace with reliable high-speed internet (minimum 50 Mbps download, 10 Mbps upload). The company will provide a laptop, monitor, keyboard, mouse, and a one-time stipend of $500 for home office equipment. Recurring internet stipends of $75 per month are available for employees who work remotely more than 3 days per week.
+
+3. Core Hours
+All remote employees must be available during core business hours of 10:00 AM to 3:00 PM Eastern Time, Monday through Thursday. Outside these hours, flexible scheduling is encouraged. Employees must maintain a minimum of 40 hours per week.
+
+4. Communication Expectations
+Remote employees are expected to maintain a Slack status indicating their availability. Video cameras must be turned on during all internal meetings and client calls. Response time to internal messages should not exceed 2 hours during core hours.
+
+5. Security Requirements
+All company data must be accessed through the corporate VPN. Personal devices are not permitted for company work. Two-factor authentication is mandatory for all accounts. Employees must lock their screens when away from their workstation. Any security incidents must be reported to IT within 1 hour of discovery.
+
+6. Performance Measurement
+Remote employees are evaluated on output and deliverables rather than hours logged. Weekly check-ins with direct supervisors are required. Quarterly performance reviews will include a remote work effectiveness assessment.
+
+7. International Remote Work
+International remote work requires prior approval from HR and the employee's manager. Employees working internationally must comply with local tax and labor laws. The company reserves the right to restrict international remote work for roles involving sensitive data or government contracts.
