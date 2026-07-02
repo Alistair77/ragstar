@@ -21,10 +21,10 @@ def reciprocal_rank_fusion(
     """
     rrf_scores: dict[str, dict] = {}
 
-    def _add_results(results: list[dict], rank_offset: int = 0):
+    def _add_results(results: list[dict], rank_key: str):
         for position, item in enumerate(results):
             item_id = item["id"]
-            rank = position + 1 + rank_offset
+            rank = position + 1
             rrf_score_val = 1.0 / (k + rank)
             if item_id not in rrf_scores:
                 item_copy = dict(item)
@@ -35,13 +35,10 @@ def reciprocal_rank_fusion(
             else:
                 rrf_scores[item_id]["rrf_score"] += rrf_score_val
 
-            if rank_offset == 0:
-                rrf_scores[item_id]["vector_rank"] = rank
-            else:
-                rrf_scores[item_id]["bm25_rank"] = rank
+            rrf_scores[item_id][rank_key] = rank
 
-    _add_results(vector_results, rank_offset=0)
-    _add_results(bm25_results, rank_offset=len(vector_results))
+    _add_results(vector_results, rank_key="vector_rank")
+    _add_results(bm25_results, rank_key="bm25_rank")
 
     return sorted(
         rrf_scores.values(),

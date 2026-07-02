@@ -24,12 +24,21 @@ def test_rrf_merge():
 
     merged_ids = [m["id"] for m in merged]
 
-    assert merged_ids[0] == "a", f"Expected a first, got {merged_ids}"
-    assert merged_ids[1] == "c", f"Expected c second, got {merged_ids}"
+    # a (vec #1, bm25 #3) and c (vec #3, bm25 #1) are symmetric, so they
+    # score identically and must both outrank every single-list doc.
+    assert set(merged_ids[:2]) == {"a", "c"}, f"Expected a and c on top, got {merged_ids}"
 
     doc_a_actual = next(m for m in merged if m["id"] == "a")
     doc_c_actual = next(m for m in merged if m["id"] == "c")
-    assert doc_a_actual["rrf_score"] > doc_c_actual["rrf_score"]
+    assert doc_a_actual["rrf_score"] == doc_c_actual["rrf_score"]
+
+    # b was vector rank #2 with no bm25 hit; e was bm25 rank #2 with no
+    # vector hit — with an unbiased merge they must also score identically.
+    doc_b = next(m for m in merged if m["id"] == "b")
+    doc_e = next(m for m in merged if m["id"] == "e")
+    assert doc_b["rrf_score"] == doc_e["rrf_score"], (
+        "BM25-only and vector-only docs at the same rank must score equally"
+    )
 
     print("RRF scores:")
     for m in merged:
