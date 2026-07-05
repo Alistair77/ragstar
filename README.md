@@ -30,6 +30,28 @@ python demo_app.py
 
 ---
 
+## Screenshots
+
+### Home page — the web UI
+
+Type a question or click a suggested chip.
+
+<img src="assets/rag_home.png" alt="RAG web UI home page" width="700">
+
+### Answer with citations
+
+The LLM responds with inline `[Source N]` references, grounded in the retrieved documents.
+
+<img src="assets/rag_answer.png" alt="RAG answer with citations" width="700">
+
+### Retrieval stages (expandable)
+
+Click to see exactly what each stage found — vector search hits, BM25 hits, and the final reranked sources sent to the LLM.
+
+<img src="assets/rag_stages.png" alt="RAG retrieval stages expanded" width="700">
+
+---
+
 ## Architecture (5-Stage Pipeline)
 
 ```
