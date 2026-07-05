@@ -1,223 +1,255 @@
 # Hybrid Search RAG
 
-A Retrieval-Augmented Generation (RAG) system over a folder of internal documents, combining **vector search** (Pinecone) with **keyword search** (BM25), merged via **Reciprocal Rank Fusion**, refined with **Cohere reranking**, and answered by a **local LLM** (Ollama) with inline citations.
+A Retrieval-Augmented Generation (RAG) system that searches documents using **both** vector search (meaning) and keyword search (exact words), merges the results, and generates answers with citations using a local LLM.
 
-Built as a learning project — this README doubles as a beginner-friendly explanation of every concept involved.
-
----
-
-## The Big Picture: What Problem Does RAG Solve?
-
-An LLM only knows what it learned during training. It has **never seen your internal documents** — your onboarding guide, incident-response policy, internal wiki. Two bad options if you want it to answer questions about those docs:
-
-- **Fine-tune the model** — slow, expensive, and it may still hallucinate instead of citing real text.
-- **Paste every document into every prompt** — breaks down with thousands of documents (too much text, too slow, too expensive).
-
-**RAG is the practical middle ground:**
-
-> Before asking the LLM anything, first *search* your documents for the few paragraphs most relevant to the question, then hand only those paragraphs to the LLM and say "answer using this."
-
-A RAG system is really two systems glued together:
-1. A **search engine** over your documents (most of the code here).
-2. An **LLM call** at the end that reads the search results and writes an answer.
-
-### Why "Hybrid" Search?
-
-This project searches two different ways at once and combines the results:
-
-| Search type | Good at | Bad at |
-|---|---|---|
-| **Vector/semantic search** (Pinecone) | Understanding *meaning* — "car" matches "automobile" with zero shared words | Exact terms — acronyms, product codes, IDs can get lost |
-| **Keyword search** (BM25) | Exact word matches — IDs, names, jargon | Meaning — won't connect "car" and "automobile" |
-
-Combining them catches cases either one alone would miss. Example: a user asks about "SEV-1" but the doc says "Severity-1" — BM25 misses it (no shared tokens), vector search catches it (same meaning).
+**Zero API keys required** — everything runs locally on your machine.
 
 ---
 
-## Architecture
-
-There are **two separate flows**:
-
-### Flow A — Ingestion (runs once, whenever docs change)
-
-```
-sample_docs/*.txt
-      │
-      ▼
-  chunk_documents()        ← RecursiveCharacterTextSplitter, ~500 chars, 50 overlap
-      │
-      ▼
-  LocalEmbeddings           ← sentence-transformers, text → 384-dim vector
-      │
-      ▼
-  Pinecone.upsert()         ← vectors + text + source metadata stored in the cloud
-```
-
-### Flow B — Query (runs on every API call)
-
-```
-POST /query {"question": "..."}
-      │
-      ▼
-┌─────────────────────┬─────────────────────┐
-│  Vector search       │   BM25 search        │   ← run independently, same query
-│  (Pinecone, top 20)  │   (in-memory, top 20)│
-└──────────┬───────────┴───────────┬──────────┘
-           └──────────┬────────────┘
-                       ▼
-          Reciprocal Rank Fusion (RRF)      ← merges 2 ranked lists into 1
-                       │
-                       ▼
-          Cohere rerank (cross-encoder)     ← re-scores the 20, keeps top 5
-                       │
-                       ▼
-          Build prompt: [SOURCE 1]...[SOURCE 5] + question
-                       │
-                       ▼
-          Ollama (local LLM) generates answer with [Source N] citations
-                       │
-                       ▼
-          JSON response: {question, answer, sources[]}
-```
-
-Mental model: **Flow A is "build the library." Flow B is "answer a question using the library."**
-
----
-
-## Stage-by-Stage Explanation
-
-### Stage 1 — Ingestion (`stage1_ingestion.py`, `embeddings.py`)
-
-**Chunking.** You can't embed a whole 10-page document as one unit — embedding models have input limits, and one giant vector representing an entire document is too "blurry." If someone asks about paragraph 7, you want to retrieve *just paragraph 7*. So each doc is split into small overlapping **chunks**:
-
-- **"Recursive"** splitting cuts at natural boundaries first: paragraph breaks → line breaks → sentence ends → spaces — avoiding severing a sentence mid-thought.
-- **Overlap (50 chars)** exists because chunk boundaries are arbitrary. If a key sentence falls right across a cut point ("...the incident must be escalated" | "within 15 minutes"), neither chunk alone makes sense. Repeating the tail of each chunk at the start of the next keeps critical sentences intact somewhere.
-
-Each chunk gets a stable MD5-hash ID (filename + position + first 50 chars), so re-ingesting the same docs *updates* Pinecone entries instead of duplicating them.
-
-**Embedding.** An **embedding** is a list of numbers (here 384) representing the *meaning* of text. Texts with similar meaning become nearby points in 384-dimensional space. This project uses `all-MiniLM-L6-v2` from sentence-transformers — small, free, runs locally on CPU, no API key.
-
-**Pinecone** is a vector database. Its one job: given a query vector, instantly find the K stored vectors closest to it, even across millions of entries. It stores each vector alongside the original chunk text and source metadata.
-
-### Stage 2 — BM25 Keyword Index (`core.py`)
-
-**BM25** is a decades-old, battle-tested relevance-scoring algorithm — no neural network, just statistics. Its score combines three intuitive ideas:
-
-1. **Term frequency** — chunks mentioning your query words more often score higher.
-2. **Inverse document frequency** — a shared word that's *rare* across the corpus (like "escalation") counts far more than a common one (like "the") that appears everywhere.
-3. **Length normalization** — long chunks aren't unfairly favored just for having more chances to match.
-
-Chunks sharing zero words with the query score 0 and are discarded.
-
-Key contrast: Pinecone finds things that *mean* the same; BM25 finds things that *say* the same words. They're fully independent searches over the same chunks — which is what makes combining them valuable.
-
-### Stage 3 — Hybrid Retrieval + Reciprocal Rank Fusion (`rrf.py`)
-
-Two ranked lists for the same query — but **their scores aren't comparable**. Pinecone gives cosine similarity (0–1); BM25 gives unbounded statistics (could be 3.7 or 47.2). You can't just add them.
-
-**RRF's trick: throw away the raw scores and use only each item's rank position.**
-
-```
-rrf_score = 1 / (k + rank)      # k = 60, a standard smoothing constant
-```
-
-Rank #1 contributes 1/61, rank #2 contributes 1/62, and so on — a smooth decaying curve regardless of the underlying score scale. If a chunk appears in **both** lists, its two contributions are **added** — "both independent methods think this is relevant" is a strong signal that pushes it to the top of the merged list.
-
-### Stage 4 — Cohere Reranking (`core.py`)
-
-Why sort *again* after RRF? Because of a fundamental accuracy/speed trade-off:
-
-- **Bi-encoder** (Pinecone): query and documents embedded *separately*, compared with simple math. Fast enough for millions of chunks because document vectors are precomputed.
-- **Cross-encoder** (Cohere rerank): query and candidate fed into the neural network *together*, letting it directly compare specific words and phrases. Far more accurate — but requires a full model pass per document per query, so it's too slow to run over an entire corpus.
-
-The production pattern: **retrieve loosely and cheaply over everything, then rerank tightly and expensively over just the top candidates.** Pinecone + BM25 narrow everything down to ~20 plausible chunks; Cohere carefully re-scores those 20 and keeps the best 5.
-
-### Stage 5 — Generation with Citations (`core.py`)
-
-The top-5 chunks are labeled `[SOURCE 1]`...`[SOURCE 5]` and pasted into the prompt (**context injection**). The prompt instruction does three deliberate jobs:
-
-1. **"Answer using ONLY the provided sources"** — called **grounding**. Left alone, an LLM will generate plausible-sounding but fabricated answers (**hallucination**). Restricting it to the provided text dramatically reduces that risk.
-2. **"Cite the source as [Source N]"** — creates **traceability**. Readers can verify which chunk backs each claim instead of trusting the model blindly.
-3. **"If the sources lack the information, say what's missing"** — explicitly permits "I don't know." This one sentence prevents a huge share of confident-but-wrong answers.
-
-Generation runs on a **local Ollama model** — free, private, no API key. Swapping LLM providers (Claude ↔ Ollama ↔ OpenAI) is usually a tiny change because they all converged on the same "list of `{role, content}` messages in → text out" interface.
-
-### Config & API Layer (`config.py`, `main.py`)
-
-- `Settings` (pydantic-settings) reads `.env`, validates types, and provides one typed settings object to every module. Required keys with no default (**failing fast**): if `.env` is missing them, the app crashes immediately with a clear error — far better than failing confusingly mid-request later.
-- FastAPI exposes the pipeline as `POST /query`. Pydantic models validate incoming/outgoing JSON automatically.
-- The **BM25 index is rebuilt at server startup** because it lives only in RAM and vanishes when the process stops — unlike Pinecone, which persists in the cloud regardless of your server's state.
-- Adding new documents requires **re-running ingestion** (Flow A). Query time never re-reads raw files — new docs are invisible until ingested.
-
----
-
-## Tech Stack (Free Tier / Local)
-
-| Stage | Tool | Cost |
-|---|---|---|
-| Embeddings | `sentence-transformers` (`all-MiniLM-L6-v2`, local) | Free — runs on CPU |
-| Vector store | Pinecone Starter tier | Free tier |
-| Keyword index | `rank_bm25` (local) | Free |
-| Reranking | Cohere trial key | Free trial, rate-limited |
-| Generation | Ollama (local) | Free |
-
-## Setup
+## Quick Start
 
 ```bash
-python3.11 -m venv .venv
+# One-time setup (already done in this project)
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Install Ollama (https://ollama.com) and pull a model, e.g.:
-ollama pull qwen2.5:3b
+# Make sure Ollama has the model
+ollama pull qwen3b-128k
+
+# Run the demo — 5 questions with full stage-by-stage output
+python local_rag.py
+
+# Run the eval suite — 10 questions, retrieval metrics, faithfulness check
+python local_rag.py --eval
+
+# Launch the web UI — interactive, visual, shows every retrieval stage
+python demo_app.py
+# → open http://127.0.0.1:8100
 ```
 
-Create a `.env` file (see `.env.example`):
+---
+
+## Architecture (5-Stage Pipeline)
 
 ```
-PINECONE_API_KEY=pcsk_xxxxx     # free tier: pinecone.io
-PINECONE_INDEX_NAME=hybrid-rag
-COHERE_API_KEY=xxxxx            # free trial: dashboard.cohere.com
+User Question
+    │
+    ▼
+┌──────────────────────────────────────────────────────┐
+│  Stage 2:  Vector Search (semantic meaning)          │
+│            all-MiniLM-L6-v2 → cosine similarity      │
+│                                                      │
+│  Stage 2:  BM25 Search (exact keyword match)         │
+│            term frequency × IDF stats                │
+└────────────────────┬──────────────────┬──────────────┘
+                     └──────┬───────────┘
+                            ▼
+┌──────────────────────────────────────────────────────┐
+│  Stage 3:  Reciprocal Rank Fusion (RRF)              │
+│            merges 2 ranked lists by position          │
+│            score = 1/(60 + rank) from each list      │
+└────────────────────────┬─────────────────────────────┘
+                         ▼
+┌──────────────────────────────────────────────────────┐
+│  Stage 4:  Cross-Encoder Rerank                      │
+│            ms-marco-MiniLM-L-6-v2 (local)            │
+│            re-scores top 10, keeps best 4            │
+└────────────────────────┬─────────────────────────────┘
+                         ▼
+┌──────────────────────────────────────────────────────┐
+│  Stage 5:  LLM Generation with citations             │
+│            qwen3b-128k via local Ollama              │
+│            builds prompt with [Source N] context     │
+│            answer + faithfulness_verification        │
+└──────────────────────────────────────────────────────┘
 ```
 
-## Usage
+### Stage 1 — Ingestion (runs once on startup)
 
-```bash
-# One-shot: ingest docs + run the 3 sample questions end-to-end
-python run_all.py
+Documents → chunked at 500 characters (50 overlap) → each chunk embedded as a 384-dim vector → stored in both a NumPy matrix (cosine similarity) and a BM25 index.
 
-# Or step by step:
-python stage1_ingestion.py     # Flow A: chunk, embed, upsert to Pinecone
-python test_rag.py             # full pipeline test with verbose stage output
+### Stage 2 — Dual Retrieval (runs on every query)
 
-# Run the API server
-python main.py                 # then POST {"question": "..."} to localhost:8000/query
+| Retriever | What it catches | Blind spot |
+|---|---|---|
+| **Vector search** (semantic) | Synonyms, paraphrases, "stipend" ↔ "reimbursement" | Exact terms, IDs, codes |
+| **BM25** (keyword) | Exact words, "SEV-1", "$1,500", "90 days" | Synonyms, meaning |
 
-# Unit tests (no API keys needed)
-python test_rrf.py
+### Stage 3 — RRF Fusion
+
+Throws away the raw scores (cosine similarity vs BM25 statistics — not comparable) and uses only **rank position**. Each item scores `1/(60 + rank)`. If one chunk appears in **both** lists, its scores add up — "both independent methods think this matters" pushes it to the top.
+
+### Stage 4 — Cross-Encoder Rerank
+
+Cross-encoders are more accurate than vector search but too slow to run over millions of chunks. The production pattern: **retrieve loosely over everything, rerank tightly over the top candidates.**
+
+### Stage 5 — Generation + Faithfulness Check
+
+The prompt does three things:
+1. **"Answer using ONLY the provided sources"** — prevents hallucination
+2. **"Cite as [Source N]"** — creates traceability
+3. **"If sources are missing, say so"** — permits "I don't know"
+
+After generation, a **faithfulness verification** step (LLM-as-Judge) checks each cited claim against its source document. Unsupported claims are flagged.
+
+---
+
+## How the Two Retrievers Compete and Cooperate
+
+The key insight: **you want two independent sources of signal, not one.**
+
+When a user asks about "SEV-1":
+
+- **BM25 wins** — the term "SEV-1" is rare in the corpus, so it scores very high on IDF. Vector search finds it too (it knows "SEV-1" means "critical incident"), but BM25 is more confident about exact matches.
+
+When a user asks "How much is the home office stipend?":
+
+- **Vector search wins** — "stipend" isn't in every chunk, but the embedding connects "stipend", "allowance", "reimbursement" as related concepts. BM25 misses if the exact word "stipend" isn't in the chunk.
+
+When a user asks "Can I claim both internet and co-working?":
+
+- **Both win** — "internet" is an exact keyword match for BM25, and the semantic embedding connects the exclusion clause ("cannot claim both") to the question about stacking benefits. The chunk appears in both lists, gets double RRF credit, and rockets to #1.
+
+---
+
+## Demo Data
+
+The `demo_docs/` folder contains 4 Markdown documents about a fictional company called **Nimbus Robotics**:
+
+| File | Topics |
+|---|---|
+| `employee_handbook.md` | Remote work, home office stipend ($1,500), internet reimbursement ($75/mo), co-working ($300/mo), PTO, parental leave, learning budget ($2,000/yr) |
+| `engineering_onboarding.md` | First-week setup, code review culture (respond within 1 business day), deployment, PR guidelines |
+| `security_incident_policy.md` | SEV-1/2/3/4 definitions, escalation process, postmortems, GDPR data breach notification (72 hours) |
+| `travel_and_expense_policy.md` | Air travel (economy/premium/business), hotels ($250/$350), meals ($80/day), non-reimbursable expenses |
+
+23 chunks total across 4 documents.
+
+---
+
+## Demo Queries to Try
+
+These 5 sample questions are built in:
+
+1. **"How much is the home office stipend and when can I use it?"**
+2. **"What do I do when a SEV-1 incident happens?"**
+3. **"Can I expense a business class flight to Tokyo?"**
+4. **"How quickly must reviewers respond to a pull request?"**
+5. **"Can I claim both internet reimbursement and a co-working membership?"**
+
+More to test the edges:
+
+6. **"What is the Nimbus learning budget?"** — vector-friendly ($2,000)
+7. **"How many days of PTO do I get?"** — cross-doc reasoning (20 vacation + 10 holidays)
+8. **"What happens if customer data is leaked?"** — harder, requires escalation + GDPR section
+9. **"How much can I expense for a hotel in London?"** — needs "high-cost cities" rule ($350)
+10. **"Can I expense wine at dinner?"** — needs "alcohol only during team events" exception
+
+---
+
+## Evaluation Results
+
+Run `python local_rag.py --eval` to reproduce.
+
+### Retrieval Metrics (top-5)
+
 ```
+Hit-rate@5:  100.0%  (10/10)
+MRR@5:        1.000
+
+Easy:    4/4 (100%)
+Medium:  3/3 (100%)
+Hard:    3/3 (100%)
+```
+
+All 10 test questions find their correct source chunk in the top-5 results. The hybrid retrieval (vector + BM25 + RRF) handles easy factual lookups, cross-section reasoning, and hard policy edge cases equally well.
+
+### Faithfulness (LLM-as-Judge)
+
+```
+Faithfulness rate:  100% (5/5)
+Average score:       1.00
+```
+
+Every generated answer's cited claims are fully supported by the source documents. The faithfulness check runs an independent LLM call that extracts each [Source N] citation, finds the corresponding claim in the answer, and verifies it against the source text.
+
+---
 
 ## Project Structure
 
 ```
 hybrid-rag/
-├── config.py             # typed settings from .env (pydantic-settings)
-├── embeddings.py         # local sentence-transformers embeddings
-├── stage1_ingestion.py   # Flow A: load → chunk → embed → Pinecone
-├── rrf.py                # standalone Reciprocal Rank Fusion (unit-tested)
-├── core.py               # Stages 2–5: BM25, hybrid search, rerank, generation
-├── main.py               # FastAPI /query endpoint
-├── test_rrf.py           # RRF unit tests (offline)
-├── test_rag.py           # full-pipeline test, 3 sample questions
-├── run_all.py            # one-shot runner
-└── sample_docs/          # toy document set
+├── local_rag.py             # Fully-local pipeline (no API keys)
+├── demo_app.py              # Web UI (FastAPI + HTML)
+├── eval_rag.py              # Evaluation framework
+├── faithfulness.py          # LLM-as-Judge claim verification
+├── rrf.py                   # Reciprocal Rank Fusion (standalone)
+├── embeddings.py            # sentence-transformers wrapper
+├── stage1_ingestion.py      # Cloud ingestion (Pinecone)
+├── core.py                  # Cloud pipeline (Pinecone + Cohere)
+├── config.py                # Settings from .env
+├── main.py                  # FastAPI /query endpoint (cloud)
+├── run_all.py               # One-shot: ingest + query
+├── sample_docs/             # 3 TXT files (cloud demo)
+├── demo_docs/               # 4 MD files (local demo)
+└── requirements.txt
 ```
 
-## Known Issues & Improvement Ideas
+---
 
-Roughly ordered by learning value per unit effort:
+## How to Run Each Mode
 
-1. ~~**RRF rank-offset bug**~~ ✅ **Fixed** — `rrf.py` originally added BM25 results with `rank_offset=len(vector_results)`, treating BM25's best hit as rank ~21 instead of rank 1 and systematically biasing the merge toward vector search. Both lists now rank from 1, and the unit tests assert that a vector-only doc and a BM25-only doc at the same rank score identically.
-2. **Evaluation** 🟠 — the most valuable RAG skill to learn next. Build a test set of questions with known correct source chunks, measure retrieval hit-rate@5 and answer faithfulness (LLM-as-judge). Turns "it feels better" into "hit-rate went from 60% to 85%."
-3. **Robustness** 🟡 — no retry/backoff on external calls (a network hiccup crashes the request); orphaned vectors linger in Pinecone when docs shrink; ingestion and BM25-index-build independently re-read the raw files and can drift.
-4. **Features** 🟢 — streaming answers, programmatic citation verification, semantic chunking (compare against fixed-size using your eval set), PDF/DOCX loaders.
+| Command | What it does | API keys needed? |
+|---|---|---|
+| `python local_rag.py` | 5 demo questions, stage-by-stage, with faithfulness check | No |
+| `python local_rag.py --eval` | 10-question eval with retrieval + faithfulness metrics | No |
+| `python local_rag.py --no-verify` | Same as default but skip faithfulness check | No |
+| `python demo_app.py` | Web UI at http://127.0.0.1:8100 | No |
+| `python run_all.py` | Ingest + quick query loop | Yes (Pinecone + Cohere) |
+| `python main.py` | FastAPI server at http://0.0.0.0:8000 | Yes (Pinecone + Cohere) |
+
+---
+
+## How Improvements Changed the System
+
+The original project was a working RAG system. Two improvements were added:
+
+### 1. Evaluation Framework (`eval_rag.py`)
+
+Before: no systematic way to measure retrieval quality. "It feels better" was the only metric.
+
+After: a golden dataset of 10 questions with expected source phrases, difficulty labels, and two metrics:
+- **Hit-rate@N** — was the right chunk retrieved? (100%)
+- **MRR@N** — where did it rank? (1.000)
+- **Faithfulness rate** — are the answers grounded? (100%)
+
+The eval dataset revealed and fixed a whitespace normalization bug: chunking inserts newlines that break substring matching in eval checks. The fix (`_normalize()`) collapses whitespace before comparing.
+
+### 2. Faithfulness Verification (`faithfulness.py`)
+
+Before: the pipeline generated answers with citations but no verification. The first eval run showed that the LLM sometimes hallucinated (answered "Yes, you can expense business class" when the source says "premium economy only").
+
+After: every answer is checked by an independent LLM-as-Judge call that:
+- Parses all `[Source N]` citations
+- Extracts the associated claims from the answer
+- Verifies each claim against the source text
+- Returns a score (0.0–1.0) and a list of unsupported claims
+- Flunks the answer if any claim is unsupported
+
+This catches hallucinations at generation time instead of shipping them to the user.
+
+---
+
+## Tech Stack
+
+| Stage | Tool | Runs on |
+|---|---|---|
+| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` | CPU |
+| Vector index | In-memory NumPy matrix | RAM |
+| Keyword index | `rank_bm25` (BM25Okapi) | RAM |
+| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | CPU |
+| LLM | Ollama (`qwen3b-128k`) | CPU/GPU |
+| Web UI | FastAPI + vanilla HTML/JS | localhost |
+| Eval | Custom framework (LLM-as-Judge) | CPU |
+| Faithfulness | LLM-as-Judge via Ollama | CPU |

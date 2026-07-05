@@ -1,14 +1,12 @@
 """
 Stage 1: Ingestion
-Load documents → chunk → embed → upsert to Pinecone
+Load documents → chunk → embed → upsert to Pinecone (or just chunk for local mode)
 """
 
 import hashlib
 from pathlib import Path
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_pinecone import PineconeVectorStore
-from pinecone import Pinecone, ServerlessSpec
 
 from config import settings
 from embeddings import LocalEmbeddings
@@ -49,6 +47,8 @@ def chunk_documents(
 
 
 def create_pinecone_index():
+    from pinecone import Pinecone, ServerlessSpec
+
     pc = Pinecone(api_key=settings.pinecone_api_key)
     existing = pc.list_indexes().names()
     if settings.pinecone_index_name not in existing:
@@ -75,26 +75,32 @@ def ingest():
     chunks = chunk_documents(docs)
     print(f"Created {len(chunks)} chunks")
 
-    index = create_pinecone_index()
-    print(f"Pinecone index '{settings.pinecone_index_name}' ready")
+    if settings.pinecone_api_key:
+        from langchain_pinecone import PineconeVectorStore
 
-    embeddings = LocalEmbeddings()
+        index = create_pinecone_index()
+        print(f"Pinecone index '{settings.pinecone_index_name}' ready")
 
-    texts = [c["text"] for c in chunks]
-    metadatas = [
-        {"source": c["source"], "chunk_index": c["chunk_index"]}
-        for c in chunks
-    ]
-    ids = [c["id"] for c in chunks]
+        embeddings = LocalEmbeddings()
 
-    vector_store = PineconeVectorStore(
-        index=index,
-        embedding=embeddings,
-        text_key="text",
-    )
+        texts = [c["text"] for c in chunks]
+        metadatas = [
+            {"source": c["source"], "chunk_index": c["chunk_index"]}
+            for c in chunks
+        ]
+        ids = [c["id"] for c in chunks]
 
-    vector_store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
-    print(f"Upserted {len(chunks)} chunks to Pinecone")
+        vector_store = PineconeVectorStore(
+            index=index,
+            embedding=embeddings,
+            text_key="text",
+        )
+
+        vector_store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+        print(f"Upserted {len(chunks)} chunks to Pinecone")
+    else:
+        print("No Pinecone API key — skipping cloud upload (local mode)")
+
     print("Stage 1 complete.\n")
     return chunks
 

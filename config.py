@@ -3,9 +3,9 @@ from pathlib import Path
 
 
 class Settings(BaseSettings):
-    pinecone_api_key: str
+    pinecone_api_key: str = ""
     pinecone_index_name: str = "hybrid-rag"
-    cohere_api_key: str
+    cohere_api_key: str = ""
 
     # Local sentence-transformers model — no API key, runs on CPU.
     embedding_model: str = "all-MiniLM-L6-v2"
