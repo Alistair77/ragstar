@@ -1,5 +1,5 @@
 """
-Stages 2–5: BM25 index, Hybrid RRF retrieval, Cohere reranking, Claude generation
+Stages 2–5: BM25 index, Hybrid RRF retrieval, optional reranking, Ollama generation
 """
 
 import hashlib
@@ -8,8 +8,6 @@ from pathlib import Path
 import numpy as np
 import ollama
 from rank_bm25 import BM25Okapi
-from cohere import Client as CohereClient
-from pinecone import Pinecone
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 from config import settings
@@ -22,22 +20,38 @@ class HybridRAG:
         self._chunks: list[dict] = []
         self._bm25: BM25Okapi | None = None
         self._bm25_corpus: list[str] | None = None
-
-        self._pc = Pinecone(api_key=settings.pinecone_api_key)
-        self._index = self._pc.Index(settings.pinecone_index_name)
         self._embeddings = LocalEmbeddings()
+        self._vector_index: "faiss.IndexFlatIP | None" = None
+        self._vector_chunks: list[dict] = []
 
-        self._cohere = CohereClient(api_key=settings.cohere_api_key)
+        self._pc = None
+        self._index = None
+        self._cohere = None
+
+        if settings.pinecone_api_key:
+            from pinecone import Pinecone as PineconeClient
+            self._pc = PineconeClient(api_key=settings.pinecone_api_key)
+            self._index = self._pc.Index(settings.pinecone_index_name)
+
+        if settings.cohere_api_key:
+            from cohere import Client as CohereClient
+            self._cohere = CohereClient(api_key=settings.cohere_api_key)
+
         self._ollama = ollama.Client(host=settings.ollama_host)
 
-    # ── Stage 2: BM25 keyword index ──────────────────────────────────
+    def build_vector_index(self, chunks: list[dict]):
+        import faiss
+
+        texts = [c["text"] for c in chunks]
+        vectors = self._embeddings.embed_documents(texts)
+        dim = len(vectors[0])
+        index = faiss.IndexFlatIP(dim)
+        index.add(np.array(vectors, dtype=np.float32))
+        self._vector_index = index
+        self._vector_chunks = chunks
+        print(f"Local vector index built over {len(chunks)} chunks (dim={dim})")
 
     def build_bm25_index(self, chunks: list[dict] | None = None):
-        """
-        Build a BM25 lexical index over the chunk corpus.
-        Can be called directly after ingestion, or the index can be
-        persisted / reloaded.
-        """
         if chunks is None:
             chunks = self._load_chunks_from_docs()
 
@@ -46,6 +60,9 @@ class HybridRAG:
         tokenized_corpus = [self._tokenize(t) for t in self._bm25_corpus]
         self._bm25 = BM25Okapi(tokenized_corpus)
         print(f"Stage 2: BM25 index built over {len(chunks)} chunks")
+
+        if self._index is None:
+            self.build_vector_index(chunks)
         return chunks
 
     def _load_chunks_from_docs(self) -> list[dict]:
@@ -76,25 +93,46 @@ class HybridRAG:
     def _tokenize(text: str) -> list[str]:
         return text.lower().split()
 
-    # ── Stage 3: Hybrid retrieval with RRF ───────────────────────────
-
     def _vector_search(self, query: str, k: int) -> list[dict]:
+        import faiss
+
         query_vector = self._embeddings.embed_query(query)
-        results = self._index.query(
-            vector=query_vector,
-            top_k=k,
-            include_metadata=True,
-        )
-        matches = []
-        for m in results.get("matches", []):
-            matches.append({
-                "id": m["id"],
-                "score": m["score"],
-                "text": m["metadata"].get("text", ""),
-                "source": m["metadata"].get("source", ""),
-                "chunk_index": int(m["metadata"].get("chunk_index", 0)),
+
+        if self._index is not None:
+            results = self._index.query(
+                vector=query_vector,
+                top_k=k,
+                include_metadata=True,
+            )
+            matches = []
+            for m in results.get("matches", []):
+                matches.append({
+                    "id": m["id"],
+                    "score": m["score"],
+                    "text": m["metadata"].get("text", ""),
+                    "source": m["metadata"].get("source", ""),
+                    "chunk_index": int(m["metadata"].get("chunk_index", 0)),
+                })
+            return matches
+
+        if self._vector_index is None:
+            raise RuntimeError("Vector index not built. Call build_bm25_index() first.")
+
+        query_vec = np.array([query_vector], dtype=np.float32)
+        scores, indices = self._vector_index.search(query_vec, k)
+        results = []
+        for score, idx in zip(scores[0], indices[0]):
+            if idx < 0:
+                continue
+            chunk = self._vector_chunks[idx]
+            results.append({
+                "id": chunk["id"],
+                "score": float(score),
+                "text": chunk["text"],
+                "source": chunk["source"],
+                "chunk_index": chunk["chunk_index"],
             })
-        return matches
+        return results
 
     def _bm25_search(self, query: str, k: int) -> list[dict]:
         if self._bm25 is None:
@@ -117,10 +155,6 @@ class HybridRAG:
         return results
 
     def hybrid_search(self, query: str) -> list[dict]:
-        """
-        Stage 3: Run vector + BM25 in parallel, merge with RRF.
-        Returns top-k_hybrid results.
-        """
         k = settings.top_k_hybrid
         vector_results = self._vector_search(query, k)
         bm25_results = self._bm25_search(query, k)
@@ -131,12 +165,11 @@ class HybridRAG:
         )
         return merged[:k]
 
-    # ── Stage 4: Cohere reranking ────────────────────────────────────
-
     def rerank(self, query: str, results: list[dict]) -> list[dict]:
-        """
-        Stage 4: Pass merged results through Cohere rerank, keep top-k.
-        """
+        if self._cohere is None:
+            print("Stage 4: Cohere not configured — using RRF results directly")
+            return results[:settings.top_k_rerank]
+
         docs = [r["text"] for r in results]
         rerank_results = self._cohere.rerank(
             query=query,
@@ -154,8 +187,6 @@ class HybridRAG:
             f"(top-{settings.top_k_rerank})"
         )
         return reranked
-
-    # ── Stage 5: Generation with citations ───────────────────────────
 
     def _build_prompt(self, query: str, chunks: list[dict]) -> str:
         context_parts = []
@@ -182,10 +213,6 @@ Provide a thorough answer with inline citations."""
         return prompt
 
     def generate(self, query: str, chunks: list[dict]) -> dict:
-        """
-        Stage 5: Call a local Ollama model with top-k chunks as context,
-        requiring inline citations.
-        """
         prompt = self._build_prompt(query, chunks)
 
         response = self._ollama.chat(
@@ -210,8 +237,6 @@ Provide a thorough answer with inline citations."""
                 for c in chunks
             ],
         }
-
-    # ── Full pipeline ─────────────────────────────────────────────────
 
     def query(self, question: str) -> dict:
         results = self.hybrid_search(question)
