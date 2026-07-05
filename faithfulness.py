@@ -16,31 +16,29 @@ import ollama
 
 OLLAMA_MODEL = "qwen3b-128k"
 
-JUDGE_PROMPT = """You are an expert faithfulness judge. Your job is to check whether each claim in an AI-generated answer is supported by the provided source texts.
+JUDGE_PROMPT = """You are an expert faithfulness judge with STRICT criteria. You MUST reject ANY answer that contains hallucinated information, makes up details, dates, amounts, or expands beyond what the sources say.
 
-The answer cites sources like [Source 1], [Source 2], etc. For EACH cited claim:
+For EACH claim in the answer:
 
-1. Find the claim in the answer
-2. Find the corresponding [Source N] text below  
-3. Decide if the source EXACTLY supports the claim (no exaggeration, no addition, no contradiction)
-4. If ANY claim is unsupported or exaggerated, the answer is UNFAITHFUL
+1. Extract the claim text that is CITE'D with [Source N]
+2. Find the source text for that [Source N] number  
+3. Does the source EXACT MATCH the claim? (character-by-character, no additions, no deletions, no imprecision)
 
-Scoring rules:
-- Score 1.0: Every claim is fully supported by the sources
-- Score 0.7: Minor issues (small imprecision, missing nuance)  
-- Score 0.3: Some claims are wrong or made up
-- Score 0.0: Major hallucination or contradiction
+Examples of EXACT matches (VALID):
+- Claim: "The home office stipend is $1,500" with Source: "The home office stipend is $1,500" ✓
+- Claim: "You can claim $75 per month" with Source: "You can claim $75 per month" ✓
 
-<answer>
-{answer}
-</answer>
+Examples of INCORRECT matches (INVALID/HALLUCINATION):
+- Claim: "The home office stipend is $1,500" with Source: "The home office stipend is available" ✗
+- Claim: "business class flight" with Source: "premium economy only" ✗
+- Claim: "Claims can be submitted within 90 days" with Source: "substitute" ✗
 
-<sources>
-{sources}
-</sources>
+Scoring rules (zero-tolerance for major hallucinations):
+- Score 1.0: Every cited claim matches the source EXACTLY - no exceptions
+- Score 0.0: Any hallucination, imprecision, or mismatch - zero tolerance
 
-Respond with EXACTLY this JSON format (no other text):
-{{"faithfulness_score": <0.0-1.0>, "issues": ["list of each unsupported claim, or empty if fully faithful"]}}"""
+Output format:
+{{"faithfulness_score": 1.0 or 0.0, "issues": [] or ["specific claim that doesn't match source"]}}"""
 
 
 def _format_sources(chunks: list[dict]) -> str:
@@ -72,7 +70,8 @@ def verify_faithfulness(answer: str, chunks: list[dict]) -> dict:
 
     refs = _extract_sources_from_answer(answer)
     if not refs:
-        return {"is_faithful": True, "faithfulness_score": 1.0,
+        # If no citations found, we can't verify faithfulness
+        return {"is_faithful": False, "faithfulness_score": 0.0,
                 "issues": ["No [Source N] citations found — answer may not be grounded"]}
 
     invalid_refs = [n for n in refs if n < 1 or n > len(chunks)]
@@ -91,15 +90,53 @@ def verify_faithfulness(answer: str, chunks: list[dict]) -> dict:
         )
         raw = resp["message"]["content"]
 
-        json_match = re.search(r'\{[^}]*"faithfulness_score"[^}]*\}', raw, re.DOTALL)
+        # Try to extract JSON from the response - handle各种格式
+        import json as json_module
+        
+        # First, try to find JSON in the response using regex patterns
+        json_match = re.search(r'\{[\s\S]*?"faithfulness_score"[\s\S]*?\}', raw)
+        if not json_match:
+            # Try simpler regex
+            json_match = re.search(r'\{[^\}]*"faithfulness_score"[^\}]*\}', raw)
+        
+        result = None
         if json_match:
-            import json as json_module
-            result = json_module.loads(json_match.group())
-        else:
-            result = {"faithfulness_score": 0.5, "issues": ["Could not parse judge response"]}
+            try:
+                result = json_module.loads(json_match.group())
+                if "faithfulness_score" in result and "issues" in result:
+                    pass  # Found valid JSON
+                else:
+                    result = None
+            except (json_module.JSONDecodeError, ValueError) as e:
+                # If JSON parsing fails, result stays None
+                pass
+        
+        # If regex didn't work, try to parse the entire response as JSON
+        if not result:
+            # Clean up common issues in JSON responses
+            cleaned = raw.strip()
+            # Remove common prefixes/suffixes
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+            
+            # Try to parse if it looks like JSON
+            if cleaned.startswith('{"') and cleaned.endswith('}'):
+                try:
+                    result = json_module.loads(cleaned)
+                except (json_module.JSONDecodeError, ValueError):
+                    pass
+        
+        # If still no valid result, create a default failure
+        if not result:
+            result = {"faithfulness_score": 0.0, "issues": ["Could not parse judge response"]}
 
     except Exception as e:
-        result = {"faithfulness_score": 0.5, "issues": [f"Judge error: {e}"]}
+        # On any error, treat as failure - better to flag potential hallucination
+        result = {"faithfulness_score": 0.0, "issues": [f"Judge error: {e}"]}
 
-    result["is_faithful"] = result.get("faithfulness_score", 0) >= 0.7 and not result.get("issues")
+    # Final check: is_faithful only if score is 1.0 AND no issues
+    result["is_faithful"] = result.get("faithfulness_score", 0) >= 1.0 and not result.get("issues")
     return result

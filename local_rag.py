@@ -22,7 +22,7 @@ import numpy as np
 import ollama
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from rrf import reciprocal_rank_fusion
 from faithfulness import verify_faithfulness
@@ -106,18 +106,36 @@ class LocalHybridRAG:
             r["rerank_score"] = float(s)
         return sorted(results, key=lambda r: r["rerank_score"], reverse=True)[:TOP_K_RERANK]
 
-    # ── Stage 5: Generation with citations (local Ollama) ───────────
+# ── Stage 5: Generation with citations (local Ollama) ───────────
     def generate(self, query: str, chunks: list[dict]) -> str:
-        context = "\n---\n".join(
-            f"[SOURCE {i+1}] (document: {c['source']})\n{c['text']}"
-            for i, c in enumerate(chunks)
-        )
+        # Filter to most relevant chunks that clearly contain answer info
+        filtered_chunks = []
+        for i, chunk in enumerate(chunks):
+            # Only include chunks that are clearly relevant
+            if i < 3 or chunk['rerank_score'] > -1:
+                filtered_chunks.append(chunk)
+        
+        # Format chunks with clear markers
+        context_parts = []
+        for i, c in enumerate(filtered_chunks):
+            context_parts.append(f"[SOURCE {i+1}] (from {c['source']}):\n{c['text']}")
+        
+        context = "\n\n---\n\n".join(context_parts)
+        
         prompt = (
-            "You are a precise assistant. Answer the question using ONLY the "
-            "sources below. Cite each claim as [Source N]. If the sources do not "
-            "contain the answer, say so.\n\n"
-            f"<sources>\n{context}\n</sources>\n\nQuestion: {query}\n\nAnswer:"
+            "You are a precise assistant with ZERO tolerance for hallucination.\n\n"
+            "RULES:\n"
+            "1. Answer ONLY using the information provided in the sources below.\n"
+            "2. For EVERY claim, extract the EXACT word-by-word text from the sources AND cite it.\n"
+            "3. DO NOT add any information not in the sources (no amounts, dates, details).\n"
+            "4. DO NOT IMAGINE or GUESS anything.\n"
+            "5. If you don't know, say \"I don't know\" and explain why not.\n"
+            "6. Each claim MUST be: [SOURCE N] → EXACT text from source.\n\n"
+            f"QUESTION: {query}\n\n"
+            f"SOURCES:\n{context}\n\n"
+            "Answer:"
         )
+        
         resp = self._ollama.chat(
             model=OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
