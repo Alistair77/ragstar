@@ -26,6 +26,16 @@ from local_rag import LocalHybridRAG
 
 app = FastAPI(title="RAG Demo with Document Upload")
 
+# Suggested questions for the demo - these are the same 5 questions that
+# run through in local_rag.py to demonstrate the system
+SAMPLE_QUESTIONS = [
+    "How much is the home office stipend and when can I use it?",
+    "What do I do when a SEV-1 incident happens?",
+    "Can I expense a business class flight to Tokyo?",
+    "How quickly must reviewers respond to a pull request?",
+    "Can I claim both the internet reimbursement and a co-working membership?",
+]
+
 # Global state for ingestion progress and RAG instance
 ingestion_progress = {
     "status": "idle",  # idle, processing, complete, error
@@ -64,8 +74,7 @@ def update_progress(status: str, progress: int, message: str = ""):
         "total_chunks": 0
     }
 
-@app.on_event("startup")
-async def startup_event():
+def startup_event():
     """Load documents on startup"""
     print("Loading documents...")
     update_progress("processing", 10, "Loading documents...")
@@ -78,6 +87,17 @@ async def startup_event():
     except Exception as e:
         update_progress("error", 0, f"Error loading documents: {str(e)}")
         print(f"❌ Error loading documents: {e}")
+
+
+def register_lifespan(app):
+    """Register lifespan event for compatibility"""
+    import asyncio
+    
+    async def lifespan(app_instance):
+        startup_event()
+        yield
+    
+    return lifespan
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
