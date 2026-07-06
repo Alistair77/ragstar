@@ -34,21 +34,21 @@ python demo_app.py
 
 ### Home page — the web UI
 
-Type a question or click a suggested chip.
+Drag & drop your own `.md`/`.txt` files, or click a suggested question. Models warm up in the background on startup, so the page is usable immediately.
 
-<img src="assets/rag_home.png" alt="RAG web UI home page" width="700">
+<img src="assets/rag_home.png" alt="RAG web UI home page with document upload" width="700">
 
 ### Answer with citations
 
-The LLM responds with inline `[Source N]` references, grounded in the retrieved documents.
+The LLM responds with inline `[Source N]` references, grounded in the retrieved documents. Generation runs at `temperature=0` for deterministic, faithful answers.
 
-<img src="assets/rag_answer.png" alt="RAG answer with citations" width="700">
+<img src="assets/rag_answer.png" alt="RAG answer citing the source documents" width="700">
 
 ### Retrieval stages (expandable)
 
-Click to see exactly what each stage found — vector search hits, BM25 hits, and the final reranked sources sent to the LLM.
+Click **"How it found this"** to see exactly what each stage found — vector search hits (by meaning), BM25 hits (by exact words), and the final reranked sources sent to the LLM, each with its score.
 
-<img src="assets/rag_stages.png" alt="RAG retrieval stages expanded" width="700">
+<img src="assets/rag_stages.png" alt="RAG retrieval stages expanded showing vector, BM25 and reranked hits" width="700">
 
 ---
 

@@ -35,14 +35,25 @@ TOP_K_HYBRID = 10          # how many candidates each retriever returns
 TOP_K_RERANK = 4           # how many survive reranking and reach the LLM
 EMBED_MODEL = "all-MiniLM-L6-v2"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+# Tested qwen2.5:0.5b (fast) — too weak, said "I could not find that" on questions
+# whose answer WAS retrieved. qwen3b is the smallest model that answers reliably.
 OLLAMA_MODEL = "qwen3b-128k"
+
+# Speed switch. When False we SKIP the cross-encoder entirely — the model is
+# never loaded (faster startup) and never runs (faster per-query). BUT: testing
+# showed rerank does real work here — it lifts the answer-bearing chunk into the
+# top-4 that reach the LLM. With it off, the right chunk falls out of the window
+# and the model answers "I don't know". So we keep it ON. Flip to False only if
+# you accept lower answer quality for a faster startup.
+USE_RERANK = True
 
 
 class LocalHybridRAG:
     def __init__(self):
         print("Loading local models (first run downloads them, then they cache)…")
         self._embedder = SentenceTransformer(EMBED_MODEL)
-        self._reranker = CrossEncoder(RERANK_MODEL)
+        # Only pay the cost of loading the cross-encoder if we actually rerank.
+        self._reranker = CrossEncoder(RERANK_MODEL) if USE_RERANK else None
         self._ollama = ollama.Client()
         self._chunks: list[dict] = []
         self._matrix: np.ndarray | None = None   # normalized chunk embeddings
@@ -100,6 +111,9 @@ class LocalHybridRAG:
 
     # ── Stage 4: Local cross-encoder rerank ─────────────────────────
     def rerank(self, query: str, results: list[dict]) -> list[dict]:
+        # Speed switch off → skip the cross-encoder, trust the RRF order.
+        if not USE_RERANK or self._reranker is None:
+            return results[:TOP_K_RERANK]
         pairs = [(query, r["text"]) for r in results]
         scores = self._reranker.predict(pairs)
         for r, s in zip(results, scores):
@@ -111,8 +125,9 @@ class LocalHybridRAG:
         # Filter to most relevant chunks that clearly contain answer info
         filtered_chunks = []
         for i, chunk in enumerate(chunks):
-            # Only include chunks that are clearly relevant
-            if i < 3 or chunk['rerank_score'] > -1:
+            # Only include chunks that are clearly relevant.
+            # .get() keeps this safe when reranking is off (no rerank_score key).
+            if i < 3 or chunk.get('rerank_score', 0) > -1:
                 filtered_chunks.append(chunk)
         
         # Format chunks with clear markers
@@ -122,23 +137,27 @@ class LocalHybridRAG:
         
         context = "\n\n---\n\n".join(context_parts)
         
+        # Keep this SIMPLE. Small local models follow short, plain instructions
+        # far better than long rule-lists — an over-constrained prompt makes them
+        # parrot the template ("[SOURCE N] → EXACT text") or refuse to answer.
         prompt = (
-            "You are a precise assistant with ZERO tolerance for hallucination.\n\n"
-            "RULES:\n"
-            "1. Answer ONLY using the information provided in the sources below.\n"
-            "2. For EVERY claim, extract the EXACT word-by-word text from the sources AND cite it.\n"
-            "3. DO NOT add any information not in the sources (no amounts, dates, details).\n"
-            "4. DO NOT IMAGINE or GUESS anything.\n"
-            "5. If you don't know, say \"I don't know\" and explain why not.\n"
-            "6. Each claim MUST be: [SOURCE N] → EXACT text from source.\n\n"
-            f"QUESTION: {query}\n\n"
-            f"SOURCES:\n{context}\n\n"
+            "Answer the question using only the sources below.\n"
+            "Cite sources inline like [Source 1].\n"
+            "If the answer is not in the sources, say "
+            "\"I could not find that in the documents.\"\n\n"
+            f"Question: {query}\n\n"
+            f"Sources:\n{context}\n\n"
             "Answer:"
         )
         
+        # temperature=0 → deterministic, greedy decoding. For grounded factual
+        # RAG we do NOT want creativity: the answer must come straight from the
+        # sources. Non-zero temperature made the model occasionally "wander" and
+        # claim it couldn't find facts that were right there in the context.
         resp = self._ollama.chat(
             model=OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0},
         )
         return resp["message"]["content"]
 
@@ -186,9 +205,11 @@ class LocalHybridRAG:
             print(f"   rrf={r['rrf_score']:.4f}  {r['source']:<32} {r['text'][:50]!r}")
 
         reranked = self.rerank(query, merged)
-        print(f"\n[Stage 4] After local rerank — top {TOP_K_RERANK} sent to the LLM:")
+        stage4_label = "After local rerank" if USE_RERANK else "Top RRF hits (rerank OFF)"
+        print(f"\n[Stage 4] {stage4_label} — top {TOP_K_RERANK} sent to the LLM:")
         for i, r in enumerate(reranked, 1):
-            print(f"   [Source {i}] {r['rerank_score']:+.2f}  {r['source']}")
+            score = f"{r['rerank_score']:+.2f}" if 'rerank_score' in r else f"rrf={r.get('rrf_score', 0):.4f}"
+            print(f"   [Source {i}] {score}  {r['source']}")
 
         print(f"\n[Stage 5] Generated answer (local Ollama · {OLLAMA_MODEL}):\n")
         answer = self.generate(query, reranked)
