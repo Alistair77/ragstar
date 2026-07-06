@@ -12,6 +12,8 @@ Features:
 - No API keys. Everything runs on your machine.
 """
 
+import uvicorn
+
 import os
 import shutil
 from pathlib import Path
@@ -46,6 +48,8 @@ ingestion_progress = {
 }
 
 rag = None  # We'll initialize this when we need it
+import threading
+_rag_lock = threading.Lock()  # guards lazy model load against warmup/query race
 
 class Ask(BaseModel):
     question: str
@@ -75,18 +79,21 @@ def update_progress(status: str, progress: int, message: str = ""):
     }
 
 def startup_event():
-    """Load documents on startup"""
-    print("Loading documents...")
-    update_progress("processing", 10, "Loading documents...")
-    try:
-        global rag
-        rag = LocalHybridRAG()
-        rag.ingest()
-        update_progress("complete", 100, f"Loaded {len(rag._chunks)} chunks")
-        print(f"✅ Loaded {len(rag._chunks)} chunks from demo_docs/")
-    except Exception as e:
-        update_progress("error", 0, f"Error loading documents: {str(e)}")
-        print(f"❌ Error loading documents: {e}")
+    """Mark ready - models load lazily on first query"""
+    print("✅ Server ready - models will load on first request")
+    update_progress("complete", 100, "Ready - click 'Process Documents' or ask a question")
+
+def get_rag():
+    """Lazy-load RAG instance on first use (thread-safe: warmup + query can race)"""
+    global rag
+    with _rag_lock:
+        if rag is None:
+            print("Loading RAG models (first request downloads them, then caches)...")
+            r = LocalHybridRAG()
+            r.ingest()
+            rag = r  # publish only once fully built
+            print(f"✅ Loaded {len(rag._chunks)} chunks")
+    return rag
 
 
 def register_lifespan(app):
@@ -193,8 +200,9 @@ async def perform_ingestion():
         update_progress("processing", 20, f"Found {len(doc_files)} documents to process")
         await asyncio.sleep(0.1)
         
-        # Reinitialize RAG instance to clear old data
-        rag = LocalHybridRAG()
+        # Initialize RAG instance if needed
+        if rag is None:
+            rag = LocalHybridRAG()
         
         # Update progress for chunking
         update_progress("processing", 30, "Chunking documents...")
@@ -231,7 +239,7 @@ async def ask(a: Ask):
         return JSONResponse({"error": "Please type a question."}, status_code=400)
     
     try:
-        result = rag.query_structured(a.question)
+        result = get_rag().query_structured(a.question)
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -872,5 +880,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Periodically check for files (in case files were added externally)
 setInterval(updateFileList, 5000);
+
 </script>
 </body></html>"""
+
+
+if __name__ == "__main__":
+    import threading
+
+    # Warm the models in the background the moment the server starts, so the
+    # ~20s of model-loading + ingestion happens WHILE the user reads the page —
+    # not after they click their first question. get_rag() caches globally, so
+    # by the time /ask runs, the work is already done (or nearly).
+    def _warmup():
+        try:
+            get_rag()
+            print("✅ Models warm — first question will be fast.")
+        except Exception as e:
+            print(f"⚠ Warmup failed (will load on first query instead): {e}")
+
+    threading.Thread(target=_warmup, daemon=True).start()
+
+    # Respect the port the harness/environment assigns (PORT env var); fall back
+    # to 8100 when run standalone. This lets the preview server pick a free port
+    # instead of colliding on a hardcoded one.
+    port = int(os.environ.get("PORT", 8100))
+    print(f"Starting server… open http://localhost:{port}  (models warming in background)")
+    uvicorn.run(app, host="0.0.0.0", port=port)
