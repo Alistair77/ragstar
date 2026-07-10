@@ -26,6 +26,15 @@ from typing import List
 
 from local_rag import LocalHybridRAG
 
+# Anchor the docs folder to THIS file's location, not the process's working
+# directory. The server may be launched with any CWD (the preview harness runs
+# it from "/"), so a relative "demo_docs" path would point at the wrong place
+# and uploads would fail with "No such file or directory". This matches the
+# absolute DOCS_DIR that local_rag.py uses for ingestion, so uploads land in the
+# exact folder ingestion reads from.
+DOCS_DIR = Path(__file__).resolve().parent / "demo_docs"
+DOCS_DIR.mkdir(parents=True, exist_ok=True)
+
 app = FastAPI(title="RAG Demo with Document Upload")
 
 # Suggested questions for the demo - these are the same 5 questions that
@@ -117,7 +126,7 @@ async def upload_file(file: UploadFile = File(...)):
         )
     
     # Save file to demo_docs
-    file_path = Path("demo_docs") / file.filename
+    file_path = DOCS_DIR / file.filename
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -140,7 +149,7 @@ async def upload_file(file: UploadFile = File(...)):
 async def remove_file(filename: str):
     """Remove an uploaded file"""
     try:
-        file_path = Path("demo_docs") / filename
+        file_path = DOCS_DIR / filename
         if file_path.exists() and file_path.is_file():
             file_path.unlink()
             return {"message": f"Removed {filename}"}
@@ -155,7 +164,7 @@ async def list_files():
     try:
         files = []
         for ext in ('*.md', '*.txt'):
-            files.extend(Path("demo_docs").glob(ext))
+            files.extend(DOCS_DIR.glob(ext))
         filenames = [f.name for f in files if f.is_file()]
         return JSONResponse({"files": sorted(filenames)})
     except Exception as e:
@@ -196,7 +205,7 @@ async def perform_ingestion():
         await asyncio.sleep(0.1)  # Allow UI to update
         
         # Get list of files to process
-        doc_files = list(Path("demo_docs").glob("*.md")) + list(Path("demo_docs").glob("*.txt"))
+        doc_files = list(DOCS_DIR.glob("*.md")) + list(DOCS_DIR.glob("*.txt"))
         update_progress("processing", 20, f"Found {len(doc_files)} documents to process")
         await asyncio.sleep(0.1)
         
@@ -250,7 +259,7 @@ async def get_suggested_questions():
     try:
         # Extract questions from all documents
         all_questions = []
-        doc_files = list(Path("demo_docs").glob("*.md")) + list(Path("demo_docs").glob("*.txt"))
+        doc_files = list(DOCS_DIR.glob("*.md")) + list(DOCS_DIR.glob("*.txt"))
         
         for file_path in doc_files:
             try:

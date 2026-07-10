@@ -16,29 +16,34 @@ import ollama
 
 OLLAMA_MODEL = "qwen3b-128k"
 
-JUDGE_PROMPT = """You are an expert faithfulness judge with STRICT criteria. You MUST reject ANY answer that contains hallucinated information, makes up details, dates, amounts, or expands beyond what the sources say.
+JUDGE_PROMPT = """You are an expert faithfulness judge with STRICT criteria. You MUST reject ANY answer that contains hallucinated information: invented details, dates, or amounts, or claims that go beyond or contradict the sources.
 
-For EACH claim in the answer:
+For EACH factual claim in the answer:
 
-1. Extract the claim text that is CITE'D with [Source N]
-2. Find the source text for that [Source N] number  
-3. Does the source EXACT MATCH the claim? (character-by-character, no additions, no deletions, no imprecision)
+1. Find the claim's [Source N] citation.
+2. Locate the text of that [Source N] in the SOURCES below.
+3. Decide: is the claim directly supported by that source? (The fact must appear in, or follow plainly from, the source text. Faithful paraphrasing is fine; invented or contradicted facts are not.)
 
-Examples of EXACT matches (VALID):
-- Claim: "The home office stipend is $1,500" with Source: "The home office stipend is $1,500" ✓
-- Claim: "You can claim $75 per month" with Source: "You can claim $75 per month" ✓
+Examples of SUPPORTED claims (VALID):
+- Claim: "The home office stipend is $1,500" · Source: "...one-time home office setup stipend of $1,500" -> supported
+- Claim: "Reviewers respond within one business day" · Source: "Reviewers should respond within one business day" -> supported
 
-Examples of INCORRECT matches (INVALID/HALLUCINATION):
-- Claim: "The home office stipend is $1,500" with Source: "The home office stipend is available" ✗
-- Claim: "business class flight" with Source: "premium economy only" ✗
-- Claim: "Claims can be submitted within 90 days" with Source: "substitute" ✗
+Examples of UNSUPPORTED claims (INVALID / HALLUCINATION):
+- Claim: "The stipend is $1,500" · Source: "The home office stipend is available" -> NOT supported (amount not in source)
+- Claim: "You can expense business class" · Source: "premium economy only" -> NOT supported (contradicts source)
 
-Scoring rules (zero-tolerance for major hallucinations):
-- Score 1.0: Every cited claim matches the source EXACTLY - no exceptions
-- Score 0.0: Any hallucination, imprecision, or mismatch - zero tolerance
+Scoring (zero tolerance for hallucination):
+- 1.0 = every cited claim is supported by its source
+- 0.0 = any invented detail, contradiction, or unsupported claim
 
-Output format:
-{{"faithfulness_score": 1.0 or 0.0, "issues": [] or ["specific claim that doesn't match source"]}}"""
+--- ANSWER TO GRADE ---
+{answer}
+
+--- SOURCES ---
+{sources}
+
+Respond with ONLY this JSON, nothing else:
+{{"faithfulness_score": 1.0 or 0.0, "issues": [] or ["the specific claim that isn't supported"]}}"""
 
 
 def _format_sources(chunks: list[dict]) -> str:
@@ -84,9 +89,13 @@ def verify_faithfulness(answer: str, chunks: list[dict]) -> dict:
     prompt = JUDGE_PROMPT.format(answer=answer, sources=sources_text)
 
     try:
+        # temperature=0 → a deterministic judge. A grader that returns a
+        # different score each run is worse than useless, so the judge must be
+        # as repeatable as the generation it grades.
         resp = ollama.chat(
             model=OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0},
         )
         raw = resp["message"]["content"]
 

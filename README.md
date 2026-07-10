@@ -202,19 +202,13 @@ Every generated answer's cited claims are fully supported by the source document
 
 ```
 hybrid-rag/
-├── local_rag.py             # Fully-local pipeline (no API keys)
+├── local_rag.py             # Fully-local 5-stage pipeline (no API keys)
 ├── demo_app.py              # Web UI (FastAPI + HTML)
 ├── eval_rag.py              # Evaluation framework
 ├── faithfulness.py          # LLM-as-Judge claim verification
 ├── rrf.py                   # Reciprocal Rank Fusion (standalone)
-├── embeddings.py            # sentence-transformers wrapper
-├── stage1_ingestion.py      # Cloud ingestion (Pinecone)
-├── core.py                  # Cloud pipeline (Pinecone + Cohere)
-├── config.py                # Settings from .env
-├── main.py                  # FastAPI /query endpoint (cloud)
-├── run_all.py               # One-shot: ingest + query
-├── sample_docs/             # 3 TXT files (cloud demo)
-├── demo_docs/               # 4 MD files (local demo)
+├── test_rrf.py              # Unit tests for the RRF merge
+├── demo_docs/               # 4 MD files (demo corpus)
 └── requirements.txt
 ```
 
@@ -228,8 +222,7 @@ hybrid-rag/
 | `python local_rag.py --eval` | 10-question eval with retrieval + faithfulness metrics | No |
 | `python local_rag.py --no-verify` | Same as default but skip faithfulness check | No |
 | `python demo_app.py` | Web UI at http://127.0.0.1:8100 | No |
-| `python run_all.py` | Ingest + quick query loop | Yes (Pinecone + Cohere) |
-| `python main.py` | FastAPI server at http://0.0.0.0:8000 | Yes (Pinecone + Cohere) |
+| `python test_rrf.py` | Unit tests for the RRF merge logic | No |
 
 ---
 
