@@ -106,9 +106,54 @@ def test_refuses_when_retrieval_is_weak():
     print("test_refuses_when_retrieval_is_weak PASSED")
 
 
+def test_query_rewrite_falls_back_safely():
+    """A bad rewrite must never replace the user's question.
+
+    Drives rewrite_query with a fake Ollama client, so no model, no server and no
+    ingestion are needed. Covers every path that must fall back to the original.
+    """
+    from local_rag import LocalHybridRAG, REWRITE_MAX_GROWTH
+
+    rag = object.__new__(LocalHybridRAG)        # no __init__ → no models loaded
+    q = "wat is teh PTO polcy"
+
+    class Fake:
+        def __init__(self, reply): self.reply = reply
+        def chat(self, *a, **k):
+            if isinstance(self.reply, Exception):
+                raise self.reply
+            return {"message": {"content": self.reply}}
+
+    # An empty question must not even reach the LLM (this client would explode).
+    rag._ollama = Fake(RuntimeError("must not be called"))
+    assert rag.rewrite_query("") == ""
+
+    # Ollama down / model missing → search as typed.
+    assert rag.rewrite_query(q) == q
+
+    # Blank reply → keep the original.
+    rag._ollama = Fake("   \n  ")
+    assert rag.rewrite_query(q) == q
+
+    # Model explained itself instead of rewriting → too long → keep the original.
+    rag._ollama = Fake("x" * (len(q) * REWRITE_MAX_GROWTH + 1))
+    assert rag.rewrite_query(q) == q
+
+    # Good rewrite → used, surrounding quotes stripped.
+    rag._ollama = Fake('"What is the paid time off policy?"')
+    assert rag.rewrite_query(q) == "What is the paid time off policy?"
+
+    # A leading reasoning block is discarded, not searched for.
+    rag._ollama = Fake("<think>hmm</think>\nWhat is the paid time off policy?")
+    assert rag.rewrite_query(q) == "What is the paid time off policy?"
+
+    print("test_query_rewrite_falls_back_safely PASSED")
+
+
 if __name__ == "__main__":
     test_single_origin()
     test_no_overlap()
     test_rrf_merge()
     test_refuses_when_retrieval_is_weak()
+    test_query_rewrite_falls_back_safely()
     print("\nAll unit tests passed!")

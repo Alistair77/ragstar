@@ -91,6 +91,24 @@ User Question
 
 Documents → chunked at 500 characters (50 overlap) → each chunk embedded as a 384-dim vector → stored in both a NumPy matrix (cosine similarity) and a BM25 index.
 
+### Stage 0 — Query Rewriting (runs before retrieval)
+
+One small LLM call cleans the question before either retriever sees it: fixes typos and expands abbreviations. Retrieval is only as good as the words it gets — a misspelled question gives BM25 nothing to match on, and pushes the embedding off target.
+
+| You type | Searched as | Effect |
+|---|---|---|
+| `wat is teh home ofice stipend` | `What is the home office stipend?` | typos fixed |
+| `PTO policy` | `Paid Time Off Policy` | **miss → hit** |
+| `how fast PR review` | `How quickly can a pull request be reviewed?` | abbreviation expanded |
+
+`PTO policy` is the case that matters: the documents never use the letters "PTO", so BM25 had nothing to match and the answer was missed entirely. Expanded to "paid time off", it retrieves correctly.
+
+Two deliberate choices:
+- **Retrieval searches the rewritten question; generation answers the original.** The reply addresses what the user actually asked.
+- **Every failure falls back to the original query** — blank reply, rambling reply, or Ollama being down. A bad rewrite can never be worse than no rewrite.
+
+Costs one extra LLM call per query. Turn it off with `USE_QUERY_REWRITE = False`.
+
 ### Stage 2 — Dual Retrieval (runs on every query)
 
 | Retriever | What it catches | Blind spot |

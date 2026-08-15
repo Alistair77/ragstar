@@ -53,6 +53,16 @@ OLLAMA_MODEL = "qwen3b-128k"
 # you accept lower answer quality for a faster startup.
 USE_RERANK = True
 
+# Query rewriting: one small LLM call that cleans the question BEFORE retrieval —
+# fixes typos and expands abbreviations ("PTO" -> "paid time off"), so BM25 has
+# real words to match and the embedding sees a well-formed question. Costs one
+# extra LLM call per query. Every failure mode falls back to the original query,
+# so the worst case is "no improvement", never a broken search.
+USE_QUERY_REWRITE = True
+# A rewrite longer than this multiple of the original means the model explained
+# itself instead of rewriting — discard it and keep the user's question.
+REWRITE_MAX_GROWTH = 3
+
 
 class LocalHybridRAG:
     def __init__(self):
@@ -94,6 +104,52 @@ class LocalHybridRAG:
         print(f"Stage 1: ingested {len(chunks)} chunks from "
               f"{len(list(DOCS_DIR.glob('*.md')))} documents\n")
         return chunks
+
+    # ── Stage 0: Query rewriting (runs before any retrieval) ────────
+    def rewrite_query(self, query: str) -> str:
+        """Clean the question before retrieval. Returns the ORIGINAL on any doubt.
+
+        Retrieval is only as good as the words it is given. A misspelled or
+        abbreviated question ("wat is teh PTO polcy") gives BM25 nothing to match
+        and pushes the embedding off target. One cheap LLM call fixes spelling and
+        expands abbreviations, and both retrievers then see the cleaned version.
+
+        Every failure path returns `query` unchanged, so a bad rewrite can never
+        be worse than no rewrite.
+        """
+        if not USE_QUERY_REWRITE or not query.strip():
+            return query
+
+        prompt = (
+            "Rewrite the question below so it is easy to search.\n"
+            "- fix spelling mistakes\n"
+            "- expand abbreviations (PTO -> paid time off, PR -> pull request)\n"
+            "- keep the original keywords, add no new facts\n"
+            "Reply with the rewritten question ONLY. No explanation, no quotes.\n\n"
+            f"Question: {query}\n\n"
+            "Rewritten:"
+        )
+        try:
+            resp = self._ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0},
+            )
+            out = resp["message"]["content"]
+            # Some models emit a reasoning block first — keep only what follows it.
+            if "</think>" in out:
+                out = out.split("</think>")[-1]
+            # Take the first real line; models like to add commentary underneath.
+            out = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
+            out = out.strip('"').strip("'").strip()
+        except Exception:
+            return query          # Ollama down / model missing → search as typed
+
+        # Reject a rewrite that came back empty or that rambled instead of
+        # rewriting. Length is a crude but reliable tell for the second case.
+        if not out or len(out) > len(query) * REWRITE_MAX_GROWTH:
+            return query
+        return out
 
     # ── Stage 2+3: Hybrid retrieval (vector + BM25) merged with RRF ──
     def _vector_search(self, query: str, k: int) -> list[dict]:
@@ -180,8 +236,11 @@ class LocalHybridRAG:
     # ── Structured pipeline (for the web UI) ────────────────────────
     def query_structured(self, query: str) -> dict:
         """Run the full pipeline and RETURN every stage as data (no printing)."""
-        merged, vec, kw = self.hybrid_search(query)
-        reranked = self.rerank(query, merged)
+        # Retrieval searches the CLEANED question; generation answers the one the
+        # user actually typed, so the reply matches what they asked.
+        search_query = self.rewrite_query(query)
+        merged, vec, kw = self.hybrid_search(search_query)
+        reranked = self.rerank(search_query, merged)
         answer = self.generate(query, reranked)
 
         def slim(rows, score_key):
@@ -194,6 +253,9 @@ class LocalHybridRAG:
 
         return {
             "query": query,
+            # None when the rewrite changed nothing — lets the UI show it only
+            # when there is actually something to show.
+            "rewritten_query": search_query if search_query != query else None,
             "vector": slim(vec[:3], "score"),
             "bm25": slim(kw[:3], "score"),
             "reranked": slim(reranked, "rerank_score"),
@@ -206,7 +268,11 @@ class LocalHybridRAG:
         print(f"QUESTION: {query}")
         print("=" * 74)
 
-        merged, vec, kw = self.hybrid_search(query)
+        search_query = self.rewrite_query(query)
+        if search_query != query:
+            print(f"\n[Stage 0] Query rewritten for search:\n   {search_query!r}")
+
+        merged, vec, kw = self.hybrid_search(search_query)
 
         print(f"\n[Stage 2] Vector search top 3 (by meaning):")
         for r in vec[:3]:
@@ -220,7 +286,7 @@ class LocalHybridRAG:
         for r in merged[:3]:
             print(f"   rrf={r['rrf_score']:.4f}  {r['source']:<32} {r['text'][:50]!r}")
 
-        reranked = self.rerank(query, merged)
+        reranked = self.rerank(search_query, merged)
         stage4_label = "After local rerank" if USE_RERANK else "Top RRF hits (rerank OFF)"
         print(f"\n[Stage 4] {stage4_label} — top {TOP_K_RERANK} sent to the LLM:")
         for i, r in enumerate(reranked, 1):
