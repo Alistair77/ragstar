@@ -284,6 +284,12 @@ async def ask_stream(a: Ask):
                 "type": "stages",
                 "query": a.question,
                 "rewritten_query": search_query if search_query != a.question else None,
+                # Full text of exactly what the model reads, numbered the way it
+                # will cite it — so [Source N] in the answer can be linked to it.
+                "sources": [
+                    {"n": i + 1, "source": c["source"], "text": c["text"].strip()}
+                    for i, c in enumerate(rag._prompt_sources(reranked))
+                ],
                 "vector": slim(vec[:3], "score"),
                 "bm25": slim(kw[:3], "score"),
                 "reranked": slim(reranked, "rerank_score"),
@@ -500,7 +506,30 @@ h1 { font-size:28px; margin:0 0 8px; }
 #listen:hover { background:#5b21b6; }
 #listen.speaking { background:#dc2626; }
 
-.stages { 
+/* Sources the model actually read. Shown full-length, not previewed, because
+   the point is to let you check the answer against the real words. */
+.sources { display:none; margin-top:18px; }
+.sources.show { display:block; }
+.sources h3 { font-size:17px; margin:0 0 10px; color:#1f2937; }
+.srccard {
+    border:1px solid #e5e7eb; border-left:4px solid #cbd5e1; border-radius:10px;
+    padding:12px 14px; margin-bottom:10px; background:#fff; transition:.25s;
+}
+.srccard .n {
+    display:inline-block; font-weight:700; font-size:13px; color:#1d4ed8;
+    background:#eff6ff; border-radius:6px; padding:1px 8px; margin-right:8px;
+}
+.srccard .fn { font-size:13px; color:#6b7280; }
+.srccard .body { margin-top:8px; font-size:15.5px; line-height:1.65; color:#374151; white-space:pre-wrap; }
+/* Flash when its citation is clicked, so the eye lands in the right place. */
+.srccard.hl { border-left-color:#f59e0b; background:#fffbeb; box-shadow:0 0 0 3px rgba(245,158,11,.25); }
+/* Citations inside the answer become buttons once the answer is complete. */
+.cite {
+    color:#1d4ed8; background:#eff6ff; border-radius:5px; padding:0 5px;
+    cursor:pointer; font-weight:600; white-space:nowrap;
+}
+.cite:hover { background:#dbeafe; text-decoration:underline; }
+.stages {
     background:var(--card); border-radius:18px; padding:24px; 
     box-shadow:0 4px 20px rgba(30,34,51,.08); 
     border-left:6px solid var(--blue); display:none; 
@@ -600,6 +629,12 @@ h1 { font-size:28px; margin:0 0 8px; }
     <div class="answer-card" id="ac">
         <h2>✅ Answer <button id="listen" onclick="toggleListen()">🔊 Listen</button></h2>
         <div class="answer-text" id="ans"></div>
+    </div>
+
+    <div class="sources" id="srcbox">
+        <h3>📄 What the AI actually read</h3>
+        <p class="note" style="margin:-4px 0 10px">Click any <b>[Source N]</b> in the answer above to jump to it.</p>
+        <div id="srclist"></div>
     </div>
 
     <div class="stages" id="st">
@@ -867,7 +902,10 @@ async function streamAnswer(question) {
 
             // A chunk can split mid-line, so keep the trailing partial in the
             // buffer and only parse whole lines.
-            const lines = buffer.split('\n');
+            // Doubled backslash on purpose: this JS lives inside a Python
+            // string, so a single-backslash newline escape would be consumed by
+            // Python and break this string literal, taking the script with it.
+            const lines = buffer.split('\\n');
             buffer = lines.pop();
 
             for (const line of lines) {
@@ -881,10 +919,14 @@ async function streamAnswer(question) {
                     loadingDiv.classList.remove('on');   // retrieval is done
                     answerCard.classList.add('show');
                     renderStages(msg);
+                    renderSources(msg.sources || []);
                 } else if (msg.type === 'token') {
                     lastAnswer += msg.t;
+                    // textContent while streaming: the model's output is never
+                    // treated as markup.
                     answerText.textContent = lastAnswer;
                 } else if (msg.type === 'done') {
+                    linkifyCitations();
                     finish();
                 }
             }
@@ -894,6 +936,44 @@ async function streamAnswer(question) {
         finish();
         alert('Error: ' + err);
     }
+}
+
+const srcBox = document.getElementById('srcbox');
+const srcList = document.getElementById('srclist');
+
+function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Show the full passages the model read — not previews. The whole point is that
+// you can check the answer against the actual words it was given.
+function renderSources(sources) {
+    if (!sources.length) { srcBox.classList.remove('show'); return; }
+    srcList.innerHTML = sources.map(s => `
+        <div class="srccard" id="src-${s.n}">
+            <span class="n">Source ${s.n}</span><span class="fn">${escapeHtml(s.source)}</span>
+            <div class="body">${escapeHtml(s.text)}</div>
+        </div>`).join('');
+    srcBox.classList.add('show');
+}
+
+// Runs once the answer is complete: turn every [Source N] into a button that
+// jumps to that passage. Done at the end, not mid-stream, so a citation split
+// across two tokens ("[Sou" + "rce 1]") is never half-matched.
+function linkifyCitations() {
+    const safe = escapeHtml(lastAnswer);
+    answerText.innerHTML = safe.replace(
+        /\[\s*Sources?\s*(\d+)\s*\]/gi,
+        (m, n) => `<span class="cite" onclick="jumpToSource(${n})">${m}</span>`
+    );
+}
+
+function jumpToSource(n) {
+    const card = document.getElementById('src-' + n);
+    if (!card) return;                       // model cited a source that isn't there
+    document.querySelectorAll('.srccard.hl').forEach(c => c.classList.remove('hl'));
+    card.classList.add('hl');
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function renderStages(data) {

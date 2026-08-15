@@ -219,6 +219,20 @@ class LocalHybridRAG:
         return sorted(results, key=lambda r: r["rerank_score"], reverse=True)[:TOP_K_RERANK]
 
 # ── Stage 5: Generation with citations (local Ollama) ───────────
+    @staticmethod
+    def _prompt_sources(chunks: list[dict]) -> list[dict]:
+        """The exact chunks the model is shown, in the order it will cite them.
+
+        [Source N] in an answer means the Nth item of THIS list — not the Nth
+        reranked chunk. The two differ because weak trailing chunks are dropped.
+        The UI reads the same list, so what gets highlighted is always what the
+        model actually read.
+        """
+        # Keep the top 3 unconditionally; a 4th only if it is not clearly weak.
+        # .get() keeps this safe when reranking is off (no rerank_score key).
+        return [c for i, c in enumerate(chunks)
+                if i < 3 or c.get("rerank_score", 0) > -1]
+
     def _build_prompt(self, query: str, chunks: list[dict]) -> str | None:
         """Build the grounded prompt, or return None when we must refuse.
 
@@ -235,14 +249,8 @@ class LocalHybridRAG:
         ):
             return None
 
-        # Filter to most relevant chunks that clearly contain answer info
-        filtered_chunks = []
-        for i, chunk in enumerate(chunks):
-            # Only include chunks that are clearly relevant.
-            # .get() keeps this safe when reranking is off (no rerank_score key).
-            if i < 3 or chunk.get('rerank_score', 0) > -1:
-                filtered_chunks.append(chunk)
-        
+        filtered_chunks = self._prompt_sources(chunks)
+
         # Format chunks with clear markers
         context_parts = []
         for i, c in enumerate(filtered_chunks):
@@ -324,6 +332,11 @@ class LocalHybridRAG:
             # None when the rewrite changed nothing — lets the UI show it only
             # when there is actually something to show.
             "rewritten_query": search_query if search_query != query else None,
+            # Full text of exactly what the model read, numbered as it cites it.
+            "sources": [
+                {"n": i + 1, "source": c["source"], "text": c["text"].strip()}
+                for i, c in enumerate(self._prompt_sources(reranked))
+            ],
             "vector": slim(vec[:3], "score"),
             "bm25": slim(kw[:3], "score"),
             "reranked": slim(reranked, "rerank_score"),
