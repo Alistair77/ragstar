@@ -76,8 +76,39 @@ def test_no_overlap():
     print("test_no_overlap PASSED")
 
 
+def test_refuses_when_retrieval_is_weak():
+    """A below-floor top chunk must refuse WITHOUT calling the LLM.
+
+    Calls LocalHybridRAG.generate unbound, with a bare object as self, so the test
+    needs no models, no Ollama, and no ingestion. If generate() ever tried to hit
+    the LLM on this input, the missing _ollama attribute would raise instead.
+    """
+    from local_rag import LocalHybridRAG, REFUSE_BELOW_RERANK
+
+    REFUSAL = "I could not find that in the documents."
+    dummy = object.__new__(LocalHybridRAG)          # no __init__ → no models loaded
+
+    weak = [{"text": "irrelevant", "source": "x.md",
+             "rerank_score": REFUSE_BELOW_RERANK - 1}]
+    assert LocalHybridRAG.generate(dummy, "q", weak).strip() == REFUSAL
+    assert LocalHybridRAG.generate(dummy, "q", []).strip() == REFUSAL
+
+    # Chunks with no rerank_score at all (reranking off) must NOT be refused here —
+    # the guard only fires on a real, below-floor score.
+    no_score = [{"text": "something", "source": "x.md"}]
+    try:
+        LocalHybridRAG.generate(dummy, "q", no_score)
+    except AttributeError:
+        pass          # expected: it got past the guard and reached for _ollama
+    else:
+        raise AssertionError("expected generate() to proceed past the refusal guard")
+
+    print("test_refuses_when_retrieval_is_weak PASSED")
+
+
 if __name__ == "__main__":
     test_single_origin()
     test_no_overlap()
     test_rrf_merge()
+    test_refuses_when_retrieval_is_weak()
     print("\nAll unit tests passed!")

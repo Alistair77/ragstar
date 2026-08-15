@@ -33,6 +33,12 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 TOP_K_HYBRID = 10          # how many candidates each retriever returns
 TOP_K_RERANK = 4           # how many survive reranking and reach the LLM
+# Refuse to answer when the best reranked chunk scores below this floor — nothing
+# retrieved is relevant enough to ground an answer. Measured on the demo corpus:
+# real answers score +6..+9 (a weak-but-valid match hit -1.1); unanswerable
+# questions all scored ~ -11. -6.0 sits in the empty gap between them.
+# ponytail: fixed floor; make it per-corpus if a new document set shifts the scale.
+REFUSE_BELOW_RERANK = -6.0
 EMBED_MODEL = "all-MiniLM-L6-v2"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Tested qwen2.5:0.5b (fast) — too weak, said "I could not find that" on questions
@@ -122,6 +128,16 @@ class LocalHybridRAG:
 
 # ── Stage 5: Generation with citations (local Ollama) ───────────
     def generate(self, query: str, chunks: list[dict]) -> str:
+        # Hard refuse when retrieval is too weak to ground an answer. Runs BEFORE
+        # the LLM: if reranking ran and even the best chunk falls below the floor,
+        # nothing retrieved is relevant — return the same "not found" message the
+        # prompt asks for, but deterministically instead of trusting the model.
+        if not chunks or (
+            "rerank_score" in chunks[0]
+            and chunks[0]["rerank_score"] < REFUSE_BELOW_RERANK
+        ):
+            return "I could not find that in the documents."
+
         # Filter to most relevant chunks that clearly contain answer info
         filtered_chunks = []
         for i, chunk in enumerate(chunks):

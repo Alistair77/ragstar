@@ -108,7 +108,21 @@ Cross-encoders are more accurate than vector search but too slow to run over mil
 
 ### Stage 5 — Generation + Faithfulness Check
 
-The prompt does three things:
+**Refuse before generating.** If the best reranked chunk scores below `REFUSE_BELOW_RERANK` (-6.0), the pipeline returns *"I could not find that in the documents"* without calling the LLM at all. Asking a model to answer from irrelevant context is how hallucinations start — so weak retrieval fails deterministically instead of being handed to the model and hoped over.
+
+The floor is measured, not guessed. On this corpus:
+
+| Question | Top rerank score |
+|---|---|
+| "How much is the home office stipend?" | **+8.9** |
+| "How quickly must reviewers respond to a PR?" | **+8.5** |
+| "Can I expense a business class flight?" (weak but valid) | **-1.1** |
+| "What is the wifi password in the Tokyo office?" | **-11.2** |
+| "Who won the 2018 FIFA World Cup?" | **-11.0** |
+
+Answerable questions land at -1.1 and above; unanswerable ones cluster near -11. The cutoff sits in the empty gap between them, with ~5 points of margin on each side — a naive threshold of `0` would have wrongly refused the valid business-class question.
+
+The prompt then does three things:
 1. **"Answer using ONLY the provided sources"** — prevents hallucination
 2. **"Cite as [Source N]"** — creates traceability
 3. **"If sources are missing, say so"** — permits "I don't know"
