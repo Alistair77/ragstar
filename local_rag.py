@@ -40,6 +40,9 @@ TOP_K_RERANK = 4           # how many survive reranking and reach the LLM
 # questions all scored ~ -11. -6.0 sits in the empty gap between them.
 # ponytail: fixed floor; make it per-corpus if a new document set shifts the scale.
 REFUSE_BELOW_RERANK = -6.0
+# One source of truth for the refusal wording — used by the hard guard, by the
+# prompt, and by the tests. Defined once so they can never drift apart.
+REFUSAL_MESSAGE = "I could not find that in the documents."
 EMBED_MODEL = "all-MiniLM-L6-v2"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Tested qwen2.5:0.5b (fast) — too weak, said "I could not find that" on questions
@@ -216,16 +219,21 @@ class LocalHybridRAG:
         return sorted(results, key=lambda r: r["rerank_score"], reverse=True)[:TOP_K_RERANK]
 
 # ── Stage 5: Generation with citations (local Ollama) ───────────
-    def generate(self, query: str, chunks: list[dict]) -> str:
+    def _build_prompt(self, query: str, chunks: list[dict]) -> str | None:
+        """Build the grounded prompt, or return None when we must refuse.
+
+        Shared by generate() and generate_stream() so the refusal rule and the
+        prompt wording can never drift apart between the two paths.
+        """
         # Hard refuse when retrieval is too weak to ground an answer. Runs BEFORE
         # the LLM: if reranking ran and even the best chunk falls below the floor,
-        # nothing retrieved is relevant — return the same "not found" message the
-        # prompt asks for, but deterministically instead of trusting the model.
+        # nothing retrieved is relevant — refuse deterministically instead of
+        # trusting the model to notice.
         if not chunks or (
             "rerank_score" in chunks[0]
             and chunks[0]["rerank_score"] < REFUSE_BELOW_RERANK
         ):
-            return "I could not find that in the documents."
+            return None
 
         # Filter to most relevant chunks that clearly contain answer info
         filtered_chunks = []
@@ -248,13 +256,18 @@ class LocalHybridRAG:
         prompt = (
             "Answer the question using only the sources below.\n"
             "Cite sources inline like [Source 1].\n"
-            "If the answer is not in the sources, say "
-            "\"I could not find that in the documents.\"\n\n"
+            f"If the answer is not in the sources, say \"{REFUSAL_MESSAGE}\"\n\n"
             f"Question: {query}\n\n"
             f"Sources:\n{context}\n\n"
             "Answer:"
         )
-        
+        return prompt
+
+    def generate(self, query: str, chunks: list[dict]) -> str:
+        prompt = self._build_prompt(query, chunks)
+        if prompt is None:
+            return REFUSAL_MESSAGE
+
         # temperature=0 → deterministic, greedy decoding. For grounded factual
         # RAG we do NOT want creativity: the answer must come straight from the
         # sources. Non-zero temperature made the model occasionally "wander" and
@@ -265,6 +278,28 @@ class LocalHybridRAG:
             options={"temperature": 0},
         )
         return resp["message"]["content"]
+
+    def generate_stream(self, query: str, chunks: list[dict]):
+        """Yield the answer piece by piece as the model writes it.
+
+        Same prompt and same refusal rule as generate() — only the delivery
+        differs. The UI can paint tokens as they arrive instead of showing a
+        blank box for several seconds, so the wait becomes visible progress.
+        """
+        prompt = self._build_prompt(query, chunks)
+        if prompt is None:
+            yield REFUSAL_MESSAGE
+            return
+
+        for part in self._ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0},
+            stream=True,
+        ):
+            piece = part.get("message", {}).get("content", "")
+            if piece:
+                yield piece
 
     # ── Structured pipeline (for the web UI) ────────────────────────
     def query_structured(self, query: str) -> dict:

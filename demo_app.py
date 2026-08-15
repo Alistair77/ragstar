@@ -18,8 +18,9 @@ import os
 import shutil
 from pathlib import Path
 from fastapi import FastAPI, File, UploadFile, BackgroundTasks, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
+import json
 import re
 import asyncio
 from typing import List
@@ -252,6 +253,53 @@ async def ask(a: Ask):
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.post("/ask-stream")
+async def ask_stream(a: Ask):
+    """Same pipeline as /ask, but the answer arrives while it is being written.
+
+    Sends newline-delimited JSON so the browser can act on each piece the moment
+    it lands: the retrieval stages first (they are ready before generation even
+    starts), then one message per token, then a final done marker.
+    """
+    if not a.question.strip():
+        return JSONResponse({"error": "Please type a question."}, status_code=400)
+
+    def events():
+        try:
+            rag = get_rag()
+            search_query = rag.rewrite_query(a.question)
+            merged, vec, kw = rag.hybrid_search(search_query)
+            reranked = rag.rerank(search_query, merged)
+
+            def slim(rows, score_key):
+                return [{"source": r["source"],
+                         "score": round(r.get(score_key, 0), 3),
+                         "preview": r["text"].strip().replace("\n", " ")[:110]}
+                        for r in rows]
+
+            # Stages go out immediately — no reason to make the user wait for
+            # the LLM before showing what was retrieved.
+            yield json.dumps({
+                "type": "stages",
+                "query": a.question,
+                "rewritten_query": search_query if search_query != a.question else None,
+                "vector": slim(vec[:3], "score"),
+                "bm25": slim(kw[:3], "score"),
+                "reranked": slim(reranked, "rerank_score"),
+            }) + "\n"
+
+            for piece in rag.generate_stream(a.question, reranked):
+                yield json.dumps({"type": "token", "t": piece}) + "\n"
+
+            yield json.dumps({"type": "done"}) + "\n"
+        except Exception as e:
+            yield json.dumps({"type": "error", "error": str(e)}) + "\n"
+
+    # text/plain (not SSE): this is plain NDJSON read with a normal fetch()
+    # reader, so EventSource framing would only add overhead.
+    return StreamingResponse(events(), media_type="text/plain")
+
 
 @app.get("/suggested-questions")
 async def get_suggested_questions():
@@ -787,44 +835,83 @@ function ask(text) {
     answerCard.classList.remove('show');
     stagesDiv.classList.remove('show');
     
-    fetch('/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question })
-    })
-    .then(r => r.json())
-    .then(data => {
+    streamAnswer(question);
+}
+
+// Read the NDJSON stream and paint each piece the moment it arrives, so the
+// user watches the answer being written instead of staring at a blank box.
+async function streamAnswer(question) {
+    const finish = () => {
         goBtn.disabled = false;
         goBtn.textContent = 'Ask →';
         loadingDiv.classList.remove('on');
-        
-        if (data.error) {
-            alert(data.error);
-            return;
+    };
+
+    try {
+        const resp = await fetch('/ask-stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question })
+        });
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        lastAnswer = '';
+        answerText.textContent = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            // A chunk can split mid-line, so keep the trailing partial in the
+            // buffer and only parse whole lines.
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                let msg;
+                try { msg = JSON.parse(line); } catch (e) { continue; }
+
+                if (msg.type === 'error') { finish(); alert(msg.error); return; }
+
+                if (msg.type === 'stages') {
+                    loadingDiv.classList.remove('on');   // retrieval is done
+                    answerCard.classList.add('show');
+                    renderStages(msg);
+                } else if (msg.type === 'token') {
+                    lastAnswer += msg.t;
+                    answerText.textContent = lastAnswer;
+                } else if (msg.type === 'done') {
+                    finish();
+                }
+            }
         }
-        
-        lastAnswer = data.answer;
-        answerText.textContent = data.answer;
-        answerCard.classList.add('show');
-        
-        // Update stages
-        const rows = (list) => list.map(r => 
-            `<div class="row"><span class="src">${r.source}</span> · <span class="sc">score ${r.score}</span><br>${r.preview}…</div>`
-        ).join('');
-        
-        stagesBody.innerHTML = `
-            <div class="stage"><div class="lab">1️⃣ Vector search — found by meaning</div>${rows(data.vector)}</div>
-            <div class="stage"><div class="lab">2️⃣ Keyword search — found by exact words</div>${rows(data.bm25)}</div>
-            <div class="stage"><div class="lab">3️⃣ After reranking — the ${data.reranked.length} best sent to the AI</div>${rows(data.reranked)}</div>
-        `;
-        stagesDiv.classList.add('show');
-    })
-    .catch(err => {
-        goBtn.disabled = false;
-        goBtn.textContent = 'Ask →';
-        loadingDiv.classList.remove('on');
+        finish();
+    } catch (err) {
+        finish();
         alert('Error: ' + err);
-    });
+    }
+}
+
+function renderStages(data) {
+    const rows = (list) => list.map(r =>
+        `<div class="row"><span class="src">${r.source}</span> · <span class="sc">score ${r.score}</span><br>${r.preview}…</div>`
+    ).join('');
+
+    const rewritten = data.rewritten_query
+        ? `<div class="stage"><div class="lab">0️⃣ Query rewritten for search</div><div class="row">${data.rewritten_query}</div></div>`
+        : '';
+
+    stagesBody.innerHTML = `
+        ${rewritten}
+        <div class="stage"><div class="lab">1️⃣ Vector search — found by meaning</div>${rows(data.vector)}</div>
+        <div class="stage"><div class="lab">2️⃣ Keyword search — found by exact words</div>${rows(data.bm25)}</div>
+        <div class="stage"><div class="lab">3️⃣ After reranking — the ${data.reranked.length} best sent to the AI</div>${rows(data.reranked)}</div>
+    `;
+    stagesDiv.classList.add('show');
 }
 
 // Listen button
