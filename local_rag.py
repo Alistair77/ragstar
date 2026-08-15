@@ -16,6 +16,7 @@ is identical in spirit to the real project. Run it:  python local_rag.py
 """
 
 import textwrap
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -59,9 +60,20 @@ USE_RERANK = True
 # extra LLM call per query. Every failure mode falls back to the original query,
 # so the worst case is "no improvement", never a broken search.
 USE_QUERY_REWRITE = True
+# How many distinct questions to remember. Ask the same thing twice and we skip
+# both the embedding model AND the rewrite LLM call. 256 covers any demo session
+# and costs a few KB. Caches are keyed on the query text only — they stay valid
+# when documents change, because neither step reads the documents.
+CACHE_SIZE = 256
 # A rewrite longer than this multiple of the original means the model explained
 # itself instead of rewriting — discard it and keep the user's question.
 REWRITE_MAX_GROWTH = 3
+# ...but short queries are allowed to grow past that multiple, up to this many
+# characters. Expanding an abbreviation makes a short query much longer on
+# purpose: "PTO polcy" (9 chars) -> "What is the paid time off policy?" (33) is
+# a GOOD rewrite that a bare 3x rule would have thrown away. A real rambling
+# answer runs to paragraphs, so it still trips this ceiling.
+REWRITE_MAX_CHARS = 120
 
 
 class LocalHybridRAG:
@@ -106,6 +118,11 @@ class LocalHybridRAG:
         return chunks
 
     # ── Stage 0: Query rewriting (runs before any retrieval) ────────
+    # Cached: re-asking the same question skips an entire LLM round-trip, which
+    # is the most expensive thing in this stage (seconds, vs milliseconds for the
+    # embedding). Deterministic anyway at temperature=0, so the cached value is
+    # exactly what a fresh call would return.
+    @lru_cache(maxsize=CACHE_SIZE)
     def rewrite_query(self, query: str) -> str:
         """Clean the question before retrieval. Returns the ORIGINAL on any doubt.
 
@@ -147,14 +164,30 @@ class LocalHybridRAG:
 
         # Reject a rewrite that came back empty or that rambled instead of
         # rewriting. Length is a crude but reliable tell for the second case.
-        if not out or len(out) > len(query) * REWRITE_MAX_GROWTH:
+        # The absolute floor matters: without it, expanding an abbreviation in a
+        # short query ("PTO polcy" -> "What is the paid time off policy?") blows
+        # past 3x and the best rewrites get thrown away.
+        limit = max(len(query) * REWRITE_MAX_GROWTH, REWRITE_MAX_CHARS)
+        if not out or len(out) > limit:
             return query
         return out
 
     # ── Stage 2+3: Hybrid retrieval (vector + BM25) merged with RRF ──
-    def _vector_search(self, query: str, k: int) -> list[dict]:
+    # ponytail: lru_cache on a method also keys on `self`, so this instance is
+    # kept alive for the process lifetime. Fine here — the app builds exactly one
+    # RAG and holds it anyway. Swap for an explicit dict if that ever changes.
+    @lru_cache(maxsize=CACHE_SIZE)
+    def _embed_query(self, query: str) -> np.ndarray:
+        """Embed + normalise a query. Cached: the same question skips the model.
+
+        Safe to cache because the result depends only on the query text and the
+        embedding model — never on the documents. Re-ingesting cannot stale it.
+        """
         q = self._embedder.encode(query)
-        q = q / np.linalg.norm(q)
+        return q / np.linalg.norm(q)
+
+    def _vector_search(self, query: str, k: int) -> list[dict]:
+        q = self._embed_query(query)
         scores = self._matrix @ q                      # cosine similarity
         top = np.argsort(scores)[::-1][:k]
         return [{**self._chunks[i], "score": float(scores[i])} for i in top]
