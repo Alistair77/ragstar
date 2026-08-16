@@ -269,7 +269,7 @@ async def ask_stream(a: Ask):
         try:
             rag = get_rag()
             search_query = rag.rewrite_query(a.question)
-            merged, vec, kw = rag.hybrid_search(search_query)
+            merged, vec, kw, parts = rag.retrieve(search_query)
             reranked = rag.rerank(search_query, merged)
 
             def slim(rows, score_key):
@@ -284,6 +284,7 @@ async def ask_stream(a: Ask):
                 "type": "stages",
                 "query": a.question,
                 "rewritten_query": search_query if search_query != a.question else None,
+                "sub_questions": parts if len(parts) > 1 else None,
                 # Full text of exactly what the model reads, numbered the way it
                 # will cite it — so [Source N] in the answer can be linked to it.
                 "sources": [
@@ -985,8 +986,14 @@ function renderStages(data) {
         ? `<div class="stage"><div class="lab">0️⃣ Query rewritten for search</div><div class="row">${data.rewritten_query}</div></div>`
         : '';
 
+    const split = (data.sub_questions && data.sub_questions.length > 1)
+        ? `<div class="stage"><div class="lab">➗ Split into ${data.sub_questions.length} sub-questions</div>` +
+          data.sub_questions.map(q => `<div class="row">${q}</div>`).join('') + `</div>`
+        : '';
+
     stagesBody.innerHTML = `
         ${rewritten}
+        ${split}
         <div class="stage"><div class="lab">1️⃣ Vector search — found by meaning</div>${rows(data.vector)}</div>
         <div class="stage"><div class="lab">2️⃣ Keyword search — found by exact words</div>${rows(data.bm25)}</div>
         <div class="stage"><div class="lab">3️⃣ After reranking — the ${data.reranked.length} best sent to the AI</div>${rows(data.reranked)}</div>

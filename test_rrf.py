@@ -193,6 +193,60 @@ def test_cache_skips_repeat_work():
     print("test_cache_skips_repeat_work PASSED")
 
 
+def test_decompose_query_guards():
+    """Splitting must be off by default, and never trust a doubtful split."""
+    import local_rag
+    from local_rag import LocalHybridRAG, MAX_SUBQUESTIONS
+
+    rag = object.__new__(LocalHybridRAG)
+    q = "What is the stipend and how long is parental leave?"
+
+    class Fake:
+        def __init__(self, reply): self.reply = reply
+        def chat(self, *a, **k):
+            if isinstance(self.reply, Exception):
+                raise self.reply
+            return {"message": {"content": self.reply}}
+
+    def swap(reply):
+        rag._ollama = Fake(reply)
+        LocalHybridRAG.decompose_query.cache_clear()
+
+    # Default is off, so this must not cost an LLM call at all.
+    swap(RuntimeError("must not be called"))
+    assert rag.decompose_query(q) == (q,)
+
+    original = local_rag.USE_DECOMPOSITION
+    local_rag.USE_DECOMPOSITION = True
+    try:
+        # Ollama down → ask the whole question.
+        swap(RuntimeError("down"))
+        assert rag.decompose_query(q) == (q,)
+
+        # A clean split is used as-is.
+        swap("What is the stipend?\nHow long is parental leave?")
+        assert rag.decompose_query(q) == (
+            "What is the stipend?", "How long is parental leave?")
+
+        # Numbering and bullets are stripped despite the prompt forbidding them.
+        swap("1. What is the stipend?\n2. How long is parental leave?")
+        assert rag.decompose_query(q) == (
+            "What is the stipend?", "How long is parental leave?")
+
+        # One line back means it was already a simple question.
+        swap("What is the stipend?")
+        assert rag.decompose_query(q) == (q,)
+
+        # More parts than the cap means the model started inventing questions.
+        swap("\n".join(f"Question {i}?" for i in range(MAX_SUBQUESTIONS + 2)))
+        assert rag.decompose_query(q) == (q,)
+    finally:
+        local_rag.USE_DECOMPOSITION = original
+        LocalHybridRAG.decompose_query.cache_clear()
+
+    print("test_decompose_query_guards PASSED")
+
+
 if __name__ == "__main__":
     test_single_origin()
     test_no_overlap()
@@ -200,4 +254,5 @@ if __name__ == "__main__":
     test_refuses_when_retrieval_is_weak()
     test_query_rewrite_falls_back_safely()
     test_cache_skips_repeat_work()
+    test_decompose_query_guards()
     print("\nAll unit tests passed!")

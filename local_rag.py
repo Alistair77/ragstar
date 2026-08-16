@@ -68,6 +68,26 @@ USE_QUERY_REWRITE = True
 # and costs a few KB. Caches are keyed on the query text only — they stay valid
 # when documents change, because neither step reads the documents.
 CACHE_SIZE = 256
+
+# Query decomposition: a question with two halves ("what is the PTO policy AND
+# the parental leave policy?") is one embedding pointing at two places, so one
+# retrieval can answer only the louder half. Split it, retrieve per part, merge.
+#
+# OFF by default, and the reason is measured rather than assumed. On this corpus
+# it never once helped: 2-part and 3-part questions spanning three different
+# documents put every needed fact in front of the LLM WITHOUT splitting, so the
+# extra LLM call (2-6s on every query) bought nothing.
+#
+# That is a property of the corpus, not a flaw in the idea. 23 chunks with
+# TOP_K_HYBRID=10 means a single search already sweeps ~43% of everything there
+# is — nothing is left for a split to discover. Turn this on when the corpus is
+# large enough that 10 candidates is a thin slice of it, which is exactly when a
+# blended two-topic embedding starts landing between both topics and matching
+# neither. Re-measure before trusting it; do not switch it on by faith.
+USE_DECOMPOSITION = False
+# Cap the split. Beyond a handful of parts the model is inventing questions
+# rather than finding them, and each part costs another retrieval pass.
+MAX_SUBQUESTIONS = 3
 # A rewrite longer than this multiple of the original means the model explained
 # itself instead of rewriting — discard it and keep the user's question.
 REWRITE_MAX_GROWTH = 3
@@ -174,6 +194,85 @@ class LocalHybridRAG:
         if not out or len(out) > limit:
             return query
         return out
+
+    # ── Stage 0b: Query decomposition (split multi-part questions) ──
+    @lru_cache(maxsize=CACHE_SIZE)
+    def decompose_query(self, query: str) -> tuple[str, ...]:
+        """Split a multi-part question. Returns (query,) when it is a single one.
+
+        A tuple (not a list) so the result is hashable and this can be cached.
+        Any doubt — model failure, one part, too many parts, a part that looks
+        like commentary — collapses back to the original question.
+        """
+        if not USE_DECOMPOSITION or not query.strip():
+            return (query,)
+
+        prompt = (
+            "Split this into separate simple questions, one per line.\n"
+            "If it is already a single question, reply with it unchanged.\n"
+            "Reply with questions only. No numbering, no explanation.\n\n"
+            f"Question: {query}\n\n"
+            "Questions:"
+        )
+        try:
+            resp = self._ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0},
+            )
+            out = resp["message"]["content"]
+        except Exception:
+            return (query,)                      # Ollama down → search as asked
+
+        if "</think>" in out:
+            out = out.split("</think>")[-1]
+
+        parts = []
+        for line in out.splitlines():
+            # Strip list markers the model adds despite being told not to.
+            line = line.strip().lstrip("-*•").strip()
+            while line[:2].rstrip(".)").isdigit() and line[:1].isdigit():
+                line = line[1:].lstrip(".) ").strip()
+            if line and len(line) <= REWRITE_MAX_CHARS:
+                parts.append(line)
+
+        # One part means it was already simple. Zero means the model rambled.
+        # More than the cap means it started inventing. All → use the original.
+        if len(parts) < 2 or len(parts) > MAX_SUBQUESTIONS:
+            return (query,)
+        return tuple(parts)
+
+    def retrieve(self, query: str):
+        """Retrieve for the whole question, or for each part of a split one.
+
+        Returns (merged, vec, kw, parts). When the question splits, each part
+        gets its own hybrid search and the results are pooled: a chunk that
+        several parts agree on has its RRF scores summed, so answering more of
+        the question ranks a chunk higher.
+        """
+        parts = self.decompose_query(query)
+        if len(parts) == 1:
+            merged, vec, kw = self.hybrid_search(query)
+            return merged, vec, kw, list(parts)
+
+        pooled: dict[str, dict] = {}
+        vec_all: list[dict] = []
+        kw_all: list[dict] = []
+        for part in parts:
+            merged, vec, kw = self.hybrid_search(part)
+            for row in merged:
+                hit = pooled.get(row["id"])
+                if hit is None:
+                    pooled[row["id"]] = dict(row)     # copy: never mutate shared
+                else:
+                    hit["rrf_score"] = hit.get("rrf_score", 0) + row.get("rrf_score", 0)
+            vec_all += vec
+            kw_all += kw
+
+        merged = sorted(pooled.values(),
+                        key=lambda r: r.get("rrf_score", 0),
+                        reverse=True)[:TOP_K_HYBRID]
+        return merged, vec_all, kw_all, list(parts)
 
     # ── Stage 2+3: Hybrid retrieval (vector + BM25) merged with RRF ──
     # ponytail: lru_cache on a method also keys on `self`, so this instance is
@@ -315,7 +414,9 @@ class LocalHybridRAG:
         # Retrieval searches the CLEANED question; generation answers the one the
         # user actually typed, so the reply matches what they asked.
         search_query = self.rewrite_query(query)
-        merged, vec, kw = self.hybrid_search(search_query)
+        merged, vec, kw, parts = self.retrieve(search_query)
+        # Rerank against the WHOLE question: the parts were only ever a way to
+        # find candidates, and the answer has to satisfy the full question.
         reranked = self.rerank(search_query, merged)
         answer = self.generate(query, reranked)
 
@@ -332,6 +433,7 @@ class LocalHybridRAG:
             # None when the rewrite changed nothing — lets the UI show it only
             # when there is actually something to show.
             "rewritten_query": search_query if search_query != query else None,
+            "sub_questions": parts if len(parts) > 1 else None,
             # Full text of exactly what the model read, numbered as it cites it.
             "sources": [
                 {"n": i + 1, "source": c["source"], "text": c["text"].strip()}
@@ -353,7 +455,11 @@ class LocalHybridRAG:
         if search_query != query:
             print(f"\n[Stage 0] Query rewritten for search:\n   {search_query!r}")
 
-        merged, vec, kw = self.hybrid_search(search_query)
+        merged, vec, kw, parts = self.retrieve(search_query)
+        if len(parts) > 1:
+            print(f"\n[Stage 0b] Split into {len(parts)} sub-questions:")
+            for p in parts:
+                print(f"   - {p}")
 
         print(f"\n[Stage 2] Vector search top 3 (by meaning):")
         for r in vec[:3]:
