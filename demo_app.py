@@ -106,16 +106,6 @@ def get_rag():
     return rag
 
 
-def register_lifespan(app):
-    """Register lifespan event for compatibility"""
-    import asyncio
-    
-    async def lifespan(app_instance):
-        startup_event()
-        yield
-    
-    return lifespan
-
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     """Upload a markdown or text file"""
@@ -131,11 +121,10 @@ async def upload_file(file: UploadFile = File(...)):
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
-        # Extract questions from the uploaded content for suggestions
-        content = file_path.read_text(encoding='utf-8')
-        suggested_questions = extract_questions_from_text(content)
-        
+
+        # Suggestions are built on demand by /suggested-questions, which reads
+        # every document anyway — doing it here as well read the whole upload
+        # back off disk and threw the result away.
         return UploadResponse(
             message=f"Uploaded {file.filename}. Ready to ingest.",
             filename=file.filename
