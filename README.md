@@ -392,9 +392,33 @@ Easy 4/4 · Medium 3/3 · Hard 3/3
 - **Hit-rate** = was the right chunk found at all?
 - **MRR** = 1.000 means it was always ranked **#1**, not merely present
 
-⚠️ **Faithfulness: not currently verified.** The judge in `faithfulness.py` had a real bug — `.format()` was called with `answer=` and `sources=` but the prompt template had no `{answer}`/`{sources}` slots, so **both were silently discarded and the judge graded blind**, returning 1.0 every time. The bug is fixed, but the full eval hasn't been re-run since, so any "100% faithful" figure would be unearned. Run `python local_rag.py --eval` to produce a real number.
+**Faithfulness** (LLM-as-Judge, first 5 questions):
 
-> 🎓 **The lesson:** a metric that silently measures nothing is worse than no metric — it buys false confidence. `.format()` ignores extra keyword arguments *without erroring*, which is why this hid for so long.
+```
+Faithfulness rate:  100%  (5/5)
+Average score:      1.00
+```
+
+Every cited claim in all 5 answers is supported by the source it points at.
+
+### ❓ "How do you know that 100% is real?"
+
+**Because the broken version also said 100%.**
+
+`faithfulness.py` had a bug: `.format()` was called with `answer=` and `sources=`, but the prompt template had **no `{answer}` or `{sources}` slots**. Python's `.format()` **ignores extra keyword arguments without erroring**, so both were silently thrown away. The judge was grading with neither the answer nor the sources in front of it — and echoed the `1.0` from its own examples every time.
+
+So a passing score proves nothing on its own. **A grader that can only say "pass" is indistinguishable from a broken one.** Before trusting the number above, the judge was fed answers it *should* reject:
+
+| Test answer | Judge said | |
+|---|---|---|
+| Correct: "stipend is $1,500, first 90 days" | **1.00 pass** | ✅ |
+| Invented: "stipend is **$5,000** and never expires" | **0.00 fail** | ✅ caught |
+| Contradicts source: "business class, **no approval** needed" | **0.00 fail** | ✅ caught |
+| Fake citation: cites **[Source 7]** (only 3 exist) | **0.00 fail** | ✅ caught |
+
+It failed all three bad answers and **named the offending claim** each time. It can say "no" — so its "yes" is worth something.
+
+> 🎓 **The lesson:** a metric that silently measures nothing is worse than no metric — it buys false confidence. **Always prove your test can fail before you believe it passes.**
 
 ---
 
@@ -432,6 +456,6 @@ Easy 4/4 · Medium 3/3 · Hard 3/3
 
 1. **Measure, don't assume.** −6.0 came from data. 0 "looked right" and would have broken a working feature.
 2. **A guard can block the thing you're building.** The 3× rule rejected the best rewrite in the system.
-3. **A broken metric is worse than no metric.** The faithfulness judge reported 100% while reading nothing.
+3. **A broken metric is worse than no metric.** The faithfulness judge reported 100% while reading nothing — and a passing score looks identical either way. **Prove a test can fail before believing it passes.**
 4. **Retrieval quality ≠ answer quality.** They fail separately. Guard them separately.
 5. **Ship the feature, then check if it earns its place.** Decomposition works perfectly and is off, because it won 0 times.
