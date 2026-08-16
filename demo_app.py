@@ -199,7 +199,10 @@ async def trigger_ingestion(background_tasks: BackgroundTasks):
 
 async def perform_ingestion():
     """Background task to perform ingestion with progress updates"""
-    global ingestion_progress, rag
+    # Only `rag` is rebound here. Progress is written by update_progress(), which
+    # owns that global itself — declaring it here too was dead, and flake8 (F824)
+    # was right to fail the build over it.
+    global rag
     try:
         # Update progress
         update_progress("processing", 10, "Scanning documents...")
@@ -964,7 +967,11 @@ function renderSources(sources) {
 function linkifyCitations() {
     const safe = escapeHtml(lastAnswer);
     answerText.innerHTML = safe.replace(
-        /\[\s*Sources?\s*(\d+)\s*\]/gi,
+        // Backslashes doubled: Python owns this string first. Regex escapes are
+        // not valid Python escapes, so they survive today only by tolerance, and
+        // Python now warns they will stop working. Doubling states the intent
+        // and emits exactly one backslash into the JS.
+        /\\[\\s*Sources?\\s*(\\d+)\\s*\\]/gi,
         (m, n) => `<span class="cite" onclick="jumpToSource(${n})">${m}</span>`
     );
 }
