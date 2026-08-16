@@ -333,295 +333,339 @@ PAGE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>📚 RAG System with Document Upload</title>
 <style>
-:root { 
-    --ink:#1e2233; --soft:#5a5f77; --paper:#fbf7ef; --card:#fff; 
-    --blue:#2563eb; --blue-soft:#dbeafe; --good:#15803d; --good-soft:#dcfce7; 
-    --violet:#6d28d9; --warn:#b45309; --warn-soft:#fef3c7;
-    --border:#e2e2ea; --input-bg:#fff; --input-border:#e2e2ea;
-    --input-focus:#2563eb; --success:#10b981; --warning:#f59e0b; --error:#ef4444;
-}
-* { box-sizing: border-box; }
-body { 
-    margin:0; background:var(--paper); color:var(--ink);
-    font-family:Verdana,"Trebuchet MS",Helvetica,sans-serif; 
-    font-size:19px; line-height:1.7; 
-}
-.wrap { max-width:900px; margin:0 auto; padding:20px 18px 80px; }
-h1 { font-size:28px; margin:0 0 8px; }
-.sub { color:var(--soft); margin:0 0 20px; font-size:17px; }
-.status-bar { 
-    padding:12px 18px; margin-bottom:20px; border-radius:12px; 
-    font-size:16px; display:flex; align-items:center; gap:12px;
-}
-.status-idle { background:#f3f4f6; color:#6b7280; }
-.status-processing { background:#dbeafe; color:#1e40af; }
-.status-complete { background:#dcfce7; color:#166534; }
-.status-error { background:#fee2e2; color:#991b1b; }
-.status-indicator { 
-    width:12px; height:12px; border-radius:50%; 
-    display:inline-block;
-}
-.status-idle .status-indicator { background:#9ca3af; }
-.status-processing .status-indicator { background:#3b82f6; animation: pulse 2s infinite; }
-.status-complete .status-indicator { background:#10b981; }
-.status-error .status-indicator { background:#ef4444; }
-@keyframes pulse { 0%, 100% { opacity:0.4; } 50% { opacity:0.8; } }
+/* ─────────────────────────────────────────────────────────────────────────
+   ragstar — visual system
 
-.upload-section { 
-    background:var(--card); border-radius:16px; padding:24px; 
-    margin-bottom:24px; border:2px dashed var(--border);
-}
-.upload-area { 
-    border:2px dashed var(--border); border-radius:12px; 
-    padding:32px; text-align:center; color:var(--soft); 
-    transition:all 0.2s;
-}
-.upload-area:hover { 
-    border-color:var(--blue); color:var(--ink); 
-    background:#f8fafc;
-}
-.upload-area.dragover { 
-    border-color:var(--blue); background:#dbeafe; 
-}
-.btn-upload { 
-    background:var(--blue); color:#fff; border:none; 
-    border-radius:10px; padding:12px 24px; font-size:16px;
-    cursor:pointer; margin-top:16px;
-}
-.btn-upload:hover { background:#1d4ed8; }
-.file-list { margin-top:16px; font-size:15px; }
-.file-item { 
-    display:flex; justify-content:space-between; align-items:center; 
-    padding:8px 12px; background:#f8fafc; border-radius:8px; 
-    margin-top:8px;
-}
-.file-name { font-weight:500; }
-.file-size { color:var(--soft); }
-.file-actions { display:flex; gap:8px; }
-.btn-remove { 
-    background:#ef4444; color:#fff; border:none; border-radius:6px; 
-    padding:4px 8px; font-size:14px; cursor:pointer;
-}
-.btn-remove:hover { background:#dc2626; }
+   Direction: technical instrument, not chat toy. This screen reports scores,
+   ranks and evidence, so it is built like a readout: a grotesque for prose, a
+   monospace for anything the machine produced, and colour that carries meaning
+   rather than decoration.
 
-.askbox { 
-    display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap;
+     blue   = vector search  (found by meaning)
+     amber  = keyword search (found by exact words)
+     green  = final answer   (what survived)
+     red    = refusal        (nothing good enough)
+
+   Those four are the whole palette. If a colour appears, it is saying which
+   stage produced the thing you are looking at.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+    --bg:#f4f2ed; --panel:#fffdfa; --ink:#16181d; --soft:#5f6470; --faint:#8b909c;
+    --rule:#ddd9d0; --rule-strong:#c7c2b6;
+    --vector:#1d4ed8; --vector-bg:#e8effd;
+    --keyword:#b45309; --keyword-bg:#fdf1dc;
+    --final:#15803d;  --final-bg:#e4f6e9;
+    --refuse:#b42318; --refuse-bg:#fdecea;
+    --focus:#1d4ed8;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+    --lift:0 1px 0 var(--rule), 0 10px 24px -18px rgba(20,22,28,.5);
 }
-#q { 
-    flex:1; min-width:280px; font-family:inherit; font-size:19px; 
-    padding:14px 18px; border:3px solid var(--input-border); 
-    border-radius:12px; background:var(--input-bg);
-}
-#q:focus { 
-    outline:none; border-color:var(--input-focus); 
-    box-shadow:0 0 0 3px rgba(37, 99, 235, 0.2);
-}
-#go { 
-    background:var(--blue); color:#fff; border:none; 
-    border-radius:12px; padding:14px 28px; font-size:19px; 
-    font-weight:700; cursor:pointer; min-width:100px;
-}
-#go:hover { background:#1d4ed8; }
-#go:disabled { 
-    background:#9ca3af; cursor:not-allowed; 
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg:#0f1114; --panel:#16191e; --ink:#e8e6e1; --soft:#9aa0ac; --faint:#6b7280;
+        --rule:#262a31; --rule-strong:#39404a;
+        --vector:#7aa2ff; --vector-bg:#141c2e;
+        --keyword:#e0a355; --keyword-bg:#2a1f10;
+        --final:#5ec97f;  --final-bg:#11241a;
+        --refuse:#f2796b; --refuse-bg:#2a1512;
+        --focus:#7aa2ff;
+        --lift:0 1px 0 var(--rule), 0 12px 28px -18px rgba(0,0,0,.9);
+    }
 }
 
-.chips { 
-    margin:16px 0 24px; display:flex; flex-wrap:wrap; gap:10px;
+* { box-sizing:border-box; }
+html { -webkit-text-size-adjust:100%; }
+body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
 }
-.chip { 
-    background:#eef0f4; color:var(--ink); font-size:15px; 
-    font-weight:500; border:2px solid var(--border);
-    border-radius:24px; padding:8px 16px; cursor:pointer;
-    transition:all 0.2s;
-}
-.chip:hover { 
-    border-color:var(--violet); background:#e0e7ff; 
-    color:#5b21b6;
-}
-.chip:active { transform:scale(0.95); }
+.wrap { max-width:920px; margin:0 auto; padding:0 22px 96px; }
 
-.hint { 
-    font-size:15px; color:var(--soft); margin-bottom:24px; 
-    line-height:1.6;
+/* ── Masthead ─────────────────────────────────────────────────────────────
+   Fine rules instead of a shadow — the instrument-panel look. The faint grid
+   is texture, not decoration; it stops the header reading as an empty band. */
+.masthead {
+    margin:0 -22px 34px; padding:26px 22px 22px;
+    border-bottom:1px solid var(--rule);
+    background:
+        linear-gradient(to right, var(--rule) 1px, transparent 1px) 0 0/28px 28px,
+        linear-gradient(to bottom, var(--rule) 1px, transparent 1px) 0 0/28px 28px,
+        var(--panel);
 }
-#loading { 
-    display:none; text-align:center; padding:30px; 
-    font-size:19px; color:var(--soft);
-}
-#loading.on { display:block; }
-.spin { 
-    display:inline-block; width:28px; height:28px; 
-    border:4px solid #d8dae6; border-top-color:var(--blue); 
-    border-radius:50%; animation:spin 1s linear infinite; 
-    vertical-align:middle; margin-right:12px;
-}
-@keyframes spin { to { transform:rotate(360deg); } }
+.masthead-inner { max-width:920px; margin:0 auto; display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
+.wordmark { font-size:30px; font-weight:800; letter-spacing:-.033em; margin:0; }
+.wordmark span { color:var(--vector); }
+.tagline { color:var(--soft); font-size:14.5px; margin:0; flex:1 1 260px; }
 
-.answer-card { 
-    background:var(--card); border-radius:18px; padding:24px 28px; 
-    margin-bottom:20px; box-shadow:0 4px 20px rgba(30,34,51,.08); 
-    border-left:6px solid var(--good); display:none; 
+/* Small tracked uppercase labels: name a section without competing with it. */
+.label {
+    font-family:var(--mono); font-size:10.5px; font-weight:600;
+    letter-spacing:.16em; text-transform:uppercase; color:var(--faint);
 }
-.answer-card.show { 
-    display:block; animation:enter .35s ease; 
-}
-@keyframes enter { 
-    from { opacity:0; transform:translateY(12px); } 
-    to { opacity:1; transform:none; } 
-}
-.answer-card h2 { 
-    font-size:16px; text-transform:uppercase; letter-spacing:.1em; 
-    color:var(--good); margin:0 0 12px; 
-    display:flex; align-items:center; gap:12px; 
-}
-.answer-text { 
-    font-size:21px; line-height:1.75; color:var(--ink); 
-}
-#listen { 
-    background:var(--violet); color:#fff; font-size:15px; 
-    padding:8px 16px; border:none; border-radius:8px; 
-    cursor:pointer; margin-top:12px;
-}
-#listen:hover { background:#5b21b6; }
-#listen.speaking { background:#dc2626; }
 
-/* Sources the model actually read. Shown full-length, not previewed, because
-   the point is to let you check the answer against the real words. */
-.sources { display:none; margin-top:18px; }
+.status { display:inline-flex; align-items:center; gap:7px; }
+.status .dot { width:7px; height:7px; border-radius:50%; background:var(--final); }
+.status.busy .dot { background:var(--keyword); animation:pulse 1.1s ease-in-out infinite; }
+.status.error .dot { background:var(--refuse); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+/* ── Ask bar — the primary action, so it carries the most weight ────────── */
+.ask { margin:0 0 14px; }
+.ask-row { display:flex; gap:10px; }
+#q {
+    flex:1; font:inherit; font-size:17px; padding:15px 17px; color:var(--ink);
+    background:var(--panel); border:1px solid var(--rule-strong); border-radius:10px;
+    transition:border-color .15s, box-shadow .15s;
+}
+#q::placeholder { color:var(--faint); }
+#q:focus { outline:none; border-color:var(--focus); box-shadow:0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent); }
+#go {
+    font:inherit; font-weight:650; font-size:15.5px; padding:0 24px; cursor:pointer;
+    /* Inverts with the theme. A hardcoded #fff here put white text on the
+       near-white --ink of dark mode, which made the label vanish. */
+    color:var(--bg); background:var(--ink); border:1px solid var(--ink); border-radius:10px;
+    transition:transform .12s, opacity .15s;
+}
+#go:hover:not(:disabled) { transform:translateY(-1px); }
+#go:active:not(:disabled) { transform:translateY(0); }
+#go:disabled { opacity:.45; cursor:default; }
+#go:focus-visible { outline:none; box-shadow:0 0 0 3px color-mix(in srgb, var(--focus) 35%, transparent); }
+
+.chips { display:flex; flex-wrap:wrap; gap:7px; margin:12px 0 8px; }
+.chip {
+    font:inherit; font-size:13.5px; color:var(--soft); cursor:pointer;
+    background:transparent; border:1px solid var(--rule-strong); border-radius:999px;
+    padding:6px 13px; transition:.14s;
+}
+.chip:hover { color:var(--vector); border-color:var(--vector); background:var(--vector-bg); }
+.chip:focus-visible { outline:none; box-shadow:0 0 0 3px color-mix(in srgb, var(--focus) 30%, transparent); }
+.hint { color:var(--faint); font-size:13px; margin:6px 0 0; }
+
+/* ── Loading ──────────────────────────────────────────────────────────── */
+#loading { display:none; align-items:center; gap:10px; color:var(--soft); font-size:14px; margin:20px 0; }
+#loading.on { display:flex; }
+.spin {
+    width:13px; height:13px; border:2px solid var(--rule-strong);
+    border-top-color:var(--vector); border-radius:50%; animation:spin .7s linear infinite;
+}
+@keyframes spin { to { transform:rotate(360deg) } }
+
+/* ── Answer — hero output. Heavy left rail so the eye lands here first. ── */
+.answer-card {
+    display:none; margin:26px 0 0; padding:22px 24px;
+    background:var(--panel); border:1px solid var(--rule);
+    border-left:4px solid var(--final); border-radius:4px 12px 12px 4px;
+    box-shadow:var(--lift);
+}
+.answer-card.show { display:block; animation:rise .28s ease-out; }
+@keyframes rise { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }
+.answer-head { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.answer-head .label { color:var(--final); }
+.answer-text { font-size:17.5px; line-height:1.72; white-space:pre-wrap; }
+/* A refusal is a different state, not a styling accident — it reads red. */
+.answer-card.refused { border-left-color:var(--refuse); }
+.answer-card.refused .answer-head .label { color:var(--refuse); }
+
+#listen {
+    font:inherit; font-size:12px; font-weight:600; cursor:pointer; margin-left:auto;
+    color:var(--soft); background:transparent; border:1px solid var(--rule-strong);
+    border-radius:999px; padding:4px 12px; transition:.14s;
+}
+#listen:hover { color:var(--ink); border-color:var(--ink); }
+#listen.speaking { color:var(--refuse); border-color:var(--refuse); }
+#listen:focus-visible { outline:none; box-shadow:0 0 0 3px color-mix(in srgb, var(--focus) 30%, transparent); }
+
+/* Citations become buttons once the answer is complete. */
+.cite {
+    font-family:var(--mono); font-size:.86em; font-weight:600; cursor:pointer;
+    color:var(--vector); background:var(--vector-bg);
+    border-radius:4px; padding:1px 5px; white-space:nowrap;
+    border-bottom:1px solid transparent; transition:.12s;
+}
+.cite:hover { border-bottom-color:var(--vector); }
+
+/* ── Evidence — full passages in monospace, because this is source material */
+.sources { display:none; margin-top:30px; }
 .sources.show { display:block; }
-.sources h3 { font-size:17px; margin:0 0 10px; color:#1f2937; }
+.sources-head { display:flex; align-items:baseline; gap:10px; margin-bottom:12px; }
 .srccard {
-    border:1px solid #e5e7eb; border-left:4px solid #cbd5e1; border-radius:10px;
-    padding:12px 14px; margin-bottom:10px; background:#fff; transition:.25s;
+    background:var(--panel); border:1px solid var(--rule); border-left:3px solid var(--rule-strong);
+    border-radius:3px 10px 10px 3px; padding:14px 16px; margin-bottom:9px; transition:.22s;
 }
 .srccard .n {
-    display:inline-block; font-weight:700; font-size:13px; color:#1d4ed8;
-    background:#eff6ff; border-radius:6px; padding:1px 8px; margin-right:8px;
+    font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:.06em;
+    color:var(--vector); background:var(--vector-bg); border-radius:4px; padding:2px 7px;
 }
-.srccard .fn { font-size:13px; color:#6b7280; }
-.srccard .body { margin-top:8px; font-size:15.5px; line-height:1.65; color:#374151; white-space:pre-wrap; }
-/* Flash when its citation is clicked, so the eye lands in the right place. */
-.srccard.hl { border-left-color:#f59e0b; background:#fffbeb; box-shadow:0 0 0 3px rgba(245,158,11,.25); }
-/* Citations inside the answer become buttons once the answer is complete. */
-.cite {
-    color:#1d4ed8; background:#eff6ff; border-radius:5px; padding:0 5px;
-    cursor:pointer; font-weight:600; white-space:nowrap;
+.srccard .fn { font-family:var(--mono); font-size:12px; color:var(--faint); margin-left:9px; }
+.srccard .body {
+    font-family:var(--mono); font-size:13px; line-height:1.7; color:var(--soft);
+    margin-top:10px; white-space:pre-wrap; word-break:break-word;
 }
-.cite:hover { background:#dbeafe; text-decoration:underline; }
-.stages {
-    background:var(--card); border-radius:18px; padding:24px; 
-    box-shadow:0 4px 20px rgba(30,34,51,.08); 
-    border-left:6px solid var(--blue); display:none; 
-}
-.stages.show { 
-    display:block; animation:enter .35s ease; 
-}
-.stages h3 { 
-    font-size:16px; text-transform:uppercase; letter-spacing:.08em; 
-    color:var(--blue); margin:0 0 16px; 
-    cursor:pointer; display:flex; align-items:center; gap:8px;
-}
-.stages h3:hover { color:#1d4ed8; }
-.stages .tog { 
-    font-size:14px; color:var(--soft); margin:0 0 12px; 
-}
-.stage { margin:16px 0; }
-.stage .lab { 
-    font-weight:700; font-size:16px; 
-    display:flex; align-items:center; gap:8px; 
-    margin-bottom:8px;
-}
-.row { 
-    font-size:14px; background:#f4f5f9; border-radius:10px; 
-    padding:10px 14px; margin:8px 0; 
-    font-family:ui-monospace,Menlo,monospace; 
-}
-.row .src { color:var(--blue); font-weight:700; }
-.row .sc { color:var(--warn); }
-
-.progress-container { 
-    margin:16px 0; 
-}
-.progress-bar { 
-    width:100%; height:8px; background:#e5e7eb; 
-    border-radius:4px; overflow:hidden; 
-}
-.progress-fill { 
-    height:100%; background:linear-gradient(90deg, var(--blue), var(--violet)); 
-    width:0%; transition:width 0.3s ease; 
-}
-.progress-text { 
-    text-align:center; margin-top:8px; font-size:14px; 
-    color:var(--soft); min-height:20px;
+.srccard.hl {
+    border-left-color:var(--keyword); background:var(--keyword-bg);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--keyword) 22%, transparent);
 }
 
-/* Responsive */
-@media (max-width: 600px) {
-    .wrap { padding:16px 12px; }
-    h1 { font-size:24px; }
-    .askbox { flex-direction:column; }
-    #q { min-width:100%; }
-    #go { width:100%; padding:16px; }
-    .chips { justify-content:center; }
+/* ── Retrieval readout — a data table, deliberately not a card grid ────── */
+.stages { display:none; margin-top:30px; }
+.stages.show { display:block; }
+.stages h3 {
+    font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--faint); cursor:pointer; margin:0;
+    display:inline-flex; align-items:center; gap:8px; transition:color .14s;
+}
+.stages h3:hover { color:var(--vector); }
+.tog { color:var(--faint); font-size:12.5px; margin:5px 0 12px; }
+.body-hidden { display:none; }
+.stage { margin-bottom:20px; }
+.stage .lab {
+    font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.08em;
+    text-transform:uppercase; padding-bottom:6px; margin-bottom:8px;
+    border-bottom:1px solid var(--rule);
+}
+/* Each stage owns its colour, so you can tell at a glance which retriever
+   surfaced a row without re-reading the heading. */
+.stage:nth-of-type(1) .lab { color:var(--vector); border-bottom-color:color-mix(in srgb, var(--vector) 35%, transparent); }
+.stage:nth-of-type(2) .lab { color:var(--keyword); border-bottom-color:color-mix(in srgb, var(--keyword) 35%, transparent); }
+.stage:nth-of-type(3) .lab { color:var(--final); border-bottom-color:color-mix(in srgb, var(--final) 35%, transparent); }
+.row {
+    font-family:var(--mono); font-size:12.5px; line-height:1.65; color:var(--soft);
+    padding:7px 0; border-bottom:1px dotted var(--rule);
+}
+.row:last-child { border-bottom:none; }
+.row .src { color:var(--ink); font-weight:600; }
+/* Scores right-aligned in a fixed column: rank reads far easier down a
+   straight edge than scattered mid-sentence. */
+.row .sc { float:right; color:var(--faint); font-variant-numeric:tabular-nums; }
+
+/* ── Documents — secondary. Asking is the point; loading files is setup. ─ */
+.docs { margin-top:44px; border-top:1px solid var(--rule); padding-top:18px; }
+.docs summary {
+    cursor:pointer; list-style:none; display:flex; align-items:center; gap:9px;
+    font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--faint); transition:color .14s;
+}
+.docs summary::-webkit-details-marker { display:none; }
+.docs summary:hover { color:var(--vector); }
+/* Literal glyph, not a CSS escape: this stylesheet lives inside a Python
+   string, and Python reads \25 as an octal escape first — "\25B8" arrived as a
+   control character followed by "B8", which is what the page displayed. */
+.docs summary::before { content:"▸"; transition:transform .18s; }
+.docs[open] summary::before { transform:rotate(90deg); }
+.docs-body { padding-top:16px; }
+.upload-area {
+    border:1px dashed var(--rule-strong); border-radius:10px; padding:24px;
+    text-align:center; color:var(--soft); font-size:14px; transition:.16s;
+}
+.upload-area.drag { border-color:var(--vector); background:var(--vector-bg); color:var(--vector); }
+#browseBtn, .btn-upload {
+    font:inherit; font-size:13.5px; font-weight:600; cursor:pointer;
+    background:var(--panel); color:var(--ink);
+    border:1px solid var(--rule-strong); border-radius:8px; padding:8px 16px;
+    transition:.14s;
+}
+#browseBtn:hover, .btn-upload:hover:not(:disabled) { border-color:var(--vector); color:var(--vector); }
+.btn-upload { margin-top:14px; }
+.btn-upload:disabled { opacity:.4; cursor:default; }
+#browseBtn:focus-visible, .btn-upload:focus-visible { outline:none; box-shadow:0 0 0 3px color-mix(in srgb, var(--focus) 30%, transparent); }
+.file-list { margin-top:12px; }
+.file-item {
+    font-family:var(--mono); font-size:12.5px; color:var(--soft);
+    display:flex; justify-content:space-between; align-items:center;
+    padding:7px 0; border-bottom:1px dotted var(--rule);
+}
+.file-item button {
+    font:inherit; font-size:11px; cursor:pointer; color:var(--faint);
+    background:none; border:none; padding:2px 6px; border-radius:4px; transition:.14s;
+}
+.file-item button:hover { color:var(--refuse); background:var(--refuse-bg); }
+
+.progress-container { margin-top:14px; }
+.progress-bar { height:3px; background:var(--rule); border-radius:2px; overflow:hidden; }
+.progress-fill { height:100%; width:0; background:var(--vector); transition:width .3s ease; }
+.progress-text { font-family:var(--mono); font-size:11.5px; color:var(--faint); margin-top:7px; }
+
+/* Respect users who asked the OS for less motion. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration:.001ms !important; transition-duration:.001ms !important; }
+}
+
+@media (max-width:620px) {
+    .wrap { padding:0 16px 72px; }
+    .masthead { margin:0 -16px 26px; padding:20px 16px 18px; }
+    .wordmark { font-size:25px; }
+    .ask-row { flex-direction:column; }
+    #go { padding:14px; }
 }
 </style>
 </head>
 <body>
+<header class="masthead">
+    <div class="masthead-inner">
+        <h1 class="wordmark">rag<span>star</span></h1>
+        <p class="tagline">Hybrid search over your own documents. Runs entirely on this machine.</p>
+        <span class="status label" id="statusBar"><span class="dot"></span><span id="statusText">Ready</span></span>
+    </div>
+</header>
+
 <div class="wrap">
-    <h1>📚 Your RAG System with Document Upload</h1>
-    <p class="sub">Upload documents, then ask questions. Everything runs locally on your machine.</p>
-    
-    <!-- Status Bar -->
-    <div class="status-bar status-idle" id="statusBar">
-        <div class="status-indicator"></div>
-        <span id="statusText">Ready</span>
-    </div>
-    
-    <!-- Upload Section -->
-    <div class="upload-section">
-        <h3>📄 Upload Documents</h3>
-        <div class="upload-area" id="uploadArea">
-            <p>Drag & drop .md or .txt files here</p>
-            <p>or <button type="button" id="browseBtn">Browse Files</button></p>
-            <input type="file" id="fileInput" multiple accept=".md,.txt" style="display:none;">
+    <!-- Asking is the primary action, so it comes first and carries the most
+         visual weight. Loading documents is setup, and lives further down. -->
+    <section class="ask" aria-label="Ask a question">
+        <div class="ask-row">
+            <input id="q" placeholder="Ask a question about your documents…"
+                   aria-label="Your question"
+                   onkeydown="if(event.key==='Enter')ask()">
+            <button id="go" onclick="ask()">Ask</button>
         </div>
-        <div class="file-list" id="fileList"></div>
-        <button class="btn-upload" id="ingestBtn" disabled>Process Documents</button>
-    </div>
-    
-    <!-- Progress Section -->
-    <div class="progress-container" id="progressContainer" style="display:none;">
-        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-        <div class="progress-text" id="progressText">Ready to process...</div>
-    </div>
-    
-    <!-- Question Section -->
-    <div class="askbox">
-        <input id="q" placeholder="Ask a question about your documents..." onkeydown="if(event.key==='Enter')ask()">
-        <button id="go" onclick="ask()">Ask →</button>
-    </div>
-    <div class="chips" id="chipsContainer"><!--CHIPS--></div>
-    <p class="hint">💡 Click a suggested question above, or type your own. Answers appear below.</p>
+        <div class="chips" id="chipsContainer"><!--CHIPS--></div>
+        <p class="hint">Pick one, or write your own.</p>
+    </section>
 
-    <div id="loading"><span class="spin"></span>Searching documents and generating answer...</div>
+    <div id="loading"><span class="spin"></span><span>Searching documents, then writing the answer…</span></div>
 
-    <div class="answer-card" id="ac">
-        <h2>✅ Answer <button id="listen" onclick="toggleListen()">🔊 Listen</button></h2>
+    <section class="answer-card" id="ac" aria-live="polite">
+        <div class="answer-head">
+            <span class="label">Answer</span>
+            <button id="listen" onclick="toggleListen()">Listen</button>
+        </div>
         <div class="answer-text" id="ans"></div>
-    </div>
+    </section>
 
-    <div class="sources" id="srcbox">
-        <h3>📄 What the AI actually read</h3>
-        <p class="note" style="margin:-4px 0 10px">Click any <b>[Source N]</b> in the answer above to jump to it.</p>
+    <section class="sources" id="srcbox" aria-label="Source passages">
+        <div class="sources-head">
+            <span class="label">Evidence</span>
+            <span class="hint" style="margin:0">the exact passages the model read — click any [Source N] above</span>
+        </div>
         <div id="srclist"></div>
-    </div>
+    </section>
 
-    <div class="stages" id="st">
-        <h3 onclick="toggleStages()">🧠 How it found this (click to expand)</h3>
+    <section class="stages" id="st" aria-label="Retrieval readout">
+        <h3 onclick="toggleStages()">Retrieval readout</h3>
         <p class="tog" id="togmsg">Show the retrieval steps ▾</p>
         <div class="body-hidden" id="stbody"></div>
-    </div>
+    </section>
+
+    <!-- Secondary: setup, not the main event. Collapsed by default. -->
+    <details class="docs">
+        <summary>Documents</summary>
+        <div class="docs-body">
+            <div class="upload-area" id="uploadArea">
+                <p style="margin:0 0 10px">Drop <code>.md</code> or <code>.txt</code> files here</p>
+                <button type="button" id="browseBtn">Browse files</button>
+                <input type="file" id="fileInput" multiple accept=".md,.txt" style="display:none;">
+            </div>
+            <div class="file-list" id="fileList"></div>
+            <button class="btn-upload" id="ingestBtn" disabled>Process documents</button>
+            <div class="progress-container" id="progressContainer" style="display:none;">
+                <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+                <div class="progress-text" id="progressText">Ready to process…</div>
+            </div>
+        </div>
+    </details>
 </div>
 
 <script>
@@ -906,6 +950,10 @@ async function streamAnswer(question) {
                     // treated as markup.
                     answerText.textContent = lastAnswer;
                 } else if (msg.type === 'done') {
+                    // A refusal is a distinct outcome, not a short answer, so it
+                    // gets its own colour instead of looking like a success.
+                    answerCard.classList.toggle('refused',
+                        lastAnswer.trim() === 'I could not find that in the documents.');
                     linkifyCitations();
                     finish();
                 }

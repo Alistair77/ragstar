@@ -26,6 +26,26 @@ python demo_app.py          # web UI  → http://localhost:8100
 
 ---
 
+## 📸 What it looks like
+
+**Asking.** Asking is the primary action, so it sits at the top and carries the most weight. Loading documents is setup, and collapses out of the way below.
+
+<img src="assets/rag_home.png" alt="ragstar home screen with the ask bar and suggested questions" width="760">
+
+**Refusing.** Asked something the documents don't cover, it says so rather than inventing an answer — and the card turns **red**, because a refusal is a different outcome, not a short answer. No LLM call is made at all.
+
+<img src="assets/rag_answer.png" alt="ragstar refusing a question the documents do not cover" width="760">
+
+**The retrieval readout.** Every stage, with its scores. Each stage owns a colour, so you can tell at a glance which retriever surfaced a row: **blue** = vector search (meaning), **amber** = BM25 (exact words), **green** = what survived reranking. Scores are right-aligned in a monospace column, because rank reads far easier down a straight edge.
+
+Note the reranker scores of about **−11** here — that is precisely why the question above was refused. The floor is −6.0.
+
+<img src="assets/rag_stages.png" alt="retrieval readout showing vector, keyword and reranked stages with scores" width="760">
+
+> Shots are the light theme. The interface is built for both — `prefers-color-scheme` is honoured, and so is `prefers-reduced-motion`.
+
+---
+
 ## 🧠 The 60-second mental model
 
 **The problem:** An LLM doesn't know your company docs. If you ask anyway, it invents an answer.
