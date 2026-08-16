@@ -247,6 +247,39 @@ def test_decompose_query_guards():
     print("test_decompose_query_guards PASSED")
 
 
+def test_endpoints_share_retrieval_path():
+    """/ask must return exactly what /ask-stream sends, plus the answer.
+
+    Both endpoints read from retrieve_structured(). Locking that here means the
+    streaming and non-streaming paths cannot drift apart in what they retrieve
+    or in how they number sources — the failure that would make a [Source N]
+    link point at the wrong passage.
+    """
+    from local_rag import LocalHybridRAG
+
+    rag = object.__new__(LocalHybridRAG)
+    stages = {
+        "query": "q",
+        "rewritten_query": None,
+        "sub_questions": None,
+        "sources": [{"n": 1, "source": "a.md", "text": "AAA"}],
+        "vector": [], "bm25": [], "reranked": [],
+    }
+    picked = [{"text": "AAA", "source": "a.md", "rerank_score": 5.0}]
+
+    # Stand in for the shared retrieval path and for generation.
+    rag.retrieve_structured = lambda q: (stages, picked)
+    rag.generate = lambda q, chunks: "ANSWER"
+
+    out = LocalHybridRAG.query_structured(rag, "q")
+
+    assert out == {**stages, "answer": "ANSWER"}
+    # Everything except the answer must be byte-identical to the streamed stages.
+    assert {k: v for k, v in out.items() if k != "answer"} == stages
+
+    print("test_endpoints_share_retrieval_path PASSED")
+
+
 if __name__ == "__main__":
     test_single_origin()
     test_no_overlap()
@@ -255,4 +288,5 @@ if __name__ == "__main__":
     test_query_rewrite_falls_back_safely()
     test_cache_skips_repeat_work()
     test_decompose_query_guards()
+    test_endpoints_share_retrieval_path()
     print("\nAll unit tests passed!")

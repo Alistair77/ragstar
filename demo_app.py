@@ -236,7 +236,14 @@ async def get_progress():
 
 @app.post("/ask")
 async def ask(a: Ask):
-    """Handle a question"""
+    """Answer a question and return the whole result as one JSON object.
+
+    Kept deliberately, though the browser uses /ask-stream. This is the
+    scripting surface — one request, one JSON reply, no stream to assemble —
+    which is what curl, tests and any downstream caller actually want. It shares
+    retrieve_structured() with the streaming endpoint, so it costs no duplicated
+    pipeline logic.
+    """
     if not a.question.strip():
         return JSONResponse({"error": "Please type a question."}, status_code=400)
     
@@ -260,33 +267,13 @@ async def ask_stream(a: Ask):
     def events():
         try:
             rag = get_rag()
-            search_query = rag.rewrite_query(a.question)
-            merged, vec, kw, parts = rag.retrieve(search_query)
-            reranked = rag.rerank(search_query, merged)
-
-            def slim(rows, score_key):
-                return [{"source": r["source"],
-                         "score": round(r.get(score_key, 0), 3),
-                         "preview": r["text"].strip().replace("\n", " ")[:110]}
-                        for r in rows]
+            # Same retrieval path /ask uses, so the two endpoints can never
+            # disagree about what was retrieved or how sources are numbered.
+            stages, reranked = rag.retrieve_structured(a.question)
 
             # Stages go out immediately — no reason to make the user wait for
             # the LLM before showing what was retrieved.
-            yield json.dumps({
-                "type": "stages",
-                "query": a.question,
-                "rewritten_query": search_query if search_query != a.question else None,
-                "sub_questions": parts if len(parts) > 1 else None,
-                # Full text of exactly what the model reads, numbered the way it
-                # will cite it — so [Source N] in the answer can be linked to it.
-                "sources": [
-                    {"n": i + 1, "source": c["source"], "text": c["text"].strip()}
-                    for i, c in enumerate(rag._prompt_sources(reranked))
-                ],
-                "vector": slim(vec[:3], "score"),
-                "bm25": slim(kw[:3], "score"),
-                "reranked": slim(reranked, "rerank_score"),
-            }) + "\n"
+            yield json.dumps({"type": "stages", **stages}) + "\n"
 
             for piece in rag.generate_stream(a.question, reranked):
                 yield json.dumps({"type": "token", "t": piece}) + "\n"

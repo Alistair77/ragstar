@@ -409,8 +409,17 @@ class LocalHybridRAG:
                 yield piece
 
     # ── Structured pipeline (for the web UI) ────────────────────────
-    def query_structured(self, query: str) -> dict:
-        """Run the full pipeline and RETURN every stage as data (no printing)."""
+    def retrieve_structured(self, query: str) -> tuple[dict, list[dict]]:
+        """Everything up to generation: stages as data, plus the chosen chunks.
+
+        The single retrieval path. Both callers use it — /ask via
+        query_structured() and /ask-stream directly — so the streaming and
+        non-streaming endpoints cannot drift apart in what they retrieve or in
+        how they number sources.
+
+        Returns (stages, reranked). `stages` has no "answer" key; the caller adds
+        it, either in one piece or token by token.
+        """
         # Retrieval searches the CLEANED question; generation answers the one the
         # user actually typed, so the reply matches what they asked.
         search_query = self.rewrite_query(query)
@@ -418,7 +427,6 @@ class LocalHybridRAG:
         # Rerank against the WHOLE question: the parts were only ever a way to
         # find candidates, and the answer has to satisfy the full question.
         reranked = self.rerank(search_query, merged)
-        answer = self.generate(query, reranked)
 
         def slim(rows, score_key):
             return [
@@ -428,7 +436,7 @@ class LocalHybridRAG:
                 for r in rows
             ]
 
-        return {
+        stages = {
             "query": query,
             # None when the rewrite changed nothing — lets the UI show it only
             # when there is actually something to show.
@@ -442,8 +450,13 @@ class LocalHybridRAG:
             "vector": slim(vec[:3], "score"),
             "bm25": slim(kw[:3], "score"),
             "reranked": slim(reranked, "rerank_score"),
-            "answer": answer,
         }
+        return stages, reranked
+
+    def query_structured(self, query: str) -> dict:
+        """Run the full pipeline and RETURN every stage as data (no printing)."""
+        stages, reranked = self.retrieve_structured(query)
+        return {**stages, "answer": self.generate(query, reranked)}
 
     # ── Full pipeline with visible stage-by-stage output ────────────
     def answer(self, query: str, verify: bool = True):
