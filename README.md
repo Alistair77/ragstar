@@ -28,7 +28,7 @@ python demo_app.py          # web UI  → http://localhost:8100
 | `python demo_app.py` | Web UI, streaming answers | ~10s to start |
 | `python local_rag.py` | 5 demo questions in the terminal | ~1 min |
 | `python local_rag.py --eval` | Full eval: 10 questions + metrics | ~3 min |
-| `python test_rrf.py` | 7 unit tests (no models needed) | <1s |
+| `python test_pipeline.py` | 8 unit tests (no models needed) | <1s |
 
 ---
 
@@ -82,7 +82,7 @@ hybrid-rag/
 ├── rrf.py            🔀 Merges 2 ranked lists into 1                (47 lines)
 ├── faithfulness.py   ⚖️  Grades answers for hallucination          (151 lines)
 ├── eval_rag.py       📊 Scores the system on 10 known questions    (232 lines)
-├── test_rrf.py       ✅ 7 unit tests, no models required           (258 lines)
+├── test_pipeline.py  ✅ 8 unit tests, no models required           (286 lines)
 │
 ├── demo_docs/        📄 4 fake company docs → 23 chunks
 ├── assets/           🖼️  README screenshots
@@ -98,7 +98,7 @@ hybrid-rag/
 | **`rrf.py`** | One function: `reciprocal_rank_fusion()` | you want to understand merging |
 | **`faithfulness.py`** | Second LLM call that grades the first | you care about hallucination |
 | **`eval_rag.py`** | Golden dataset + hit-rate/MRR scoring | you want to measure quality |
-| **`test_rrf.py`** | Fast tests using fake clients | you changed anything |
+| **`test_pipeline.py`** | Fast tests using fake clients | you changed anything |
 
 > 💡 **Why so few files?** This used to have a second, parallel cloud version (Pinecone + Cohere) — 11 files that nothing imported and that needed API keys. Deleted. **One working path beats two half-paths.**
 
@@ -387,7 +387,7 @@ Both the prompt and the UI read from one function, `_prompt_sources()`, so they 
 ## 🧪 Tests
 
 ```bash
-python test_rrf.py        # 7 tests, <1 second, no models, no Ollama
+python test_pipeline.py   # 8 tests, <1 second, no models, no Ollama
 ```
 
 | Test | Proves |
@@ -399,6 +399,7 @@ python test_rrf.py        # 7 tests, <1 second, no models, no Ollama
 | `test_query_rewrite_falls_back_safely` | 6 bad-rewrite paths → original kept |
 | `test_cache_skips_repeat_work` | Same question = **1** LLM call, not 2 |
 | `test_decompose_query_guards` | Off by default; bad splits rejected |
+| `test_endpoints_share_retrieval_path` | `/ask` returns exactly what `/ask-stream` streams |
 
 **Why fake clients instead of the real model?** Tests you won't run are worthless. These run in **milliseconds**, so they run every time.
 
