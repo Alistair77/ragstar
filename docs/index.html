@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ragstar — hybrid retrieval, running in your browser</title>
+<meta name="description" content="Vector search, BM25, Reciprocal Rank Fusion and cross-encoder reranking, computed live in the browser. No server, no API keys.">
+<style>
+/* Same visual system as the full app: a technical readout, not a chat toy.
+   Colour names the stage that produced what you are looking at —
+   blue vector, amber keyword, green survived, red refused. */
+:root {
+    --bg:#f4f2ed; --panel:#fffdfa; --ink:#16181d; --soft:#5f6470; --faint:#8b909c;
+    --rule:#ddd9d0; --rule-strong:#c7c2b6;
+    --vector:#1d4ed8; --vector-bg:#e8effd;
+    --keyword:#b45309; --keyword-bg:#fdf1dc;
+    --final:#15803d;  --final-bg:#e4f6e9;
+    --refuse:#b42318; --refuse-bg:#fdecea;
+    --focus:#1d4ed8;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+    --lift:0 1px 0 var(--rule), 0 10px 24px -18px rgba(20,22,28,.5);
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg:#0f1114; --panel:#16191e; --ink:#e8e6e1; --soft:#9aa0ac; --faint:#6b7280;
+        --rule:#262a31; --rule-strong:#39404a;
+        --vector:#7aa2ff; --vector-bg:#141c2e;
+        --keyword:#e0a355; --keyword-bg:#2a1f10;
+        --final:#5ec97f;  --final-bg:#11241a;
+        --refuse:#f2796b; --refuse-bg:#2a1512;
+        --focus:#7aa2ff;
+        --lift:0 1px 0 var(--rule), 0 12px 28px -18px rgba(0,0,0,.9);
+    }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans);
+       font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:920px; margin:0 auto; padding:0 22px 96px; }
+
+.masthead { margin:0 0 30px; padding:26px 22px 22px; border-bottom:1px solid var(--rule);
+    background:
+        linear-gradient(to right, var(--rule) 1px, transparent 1px) 0 0/28px 28px,
+        linear-gradient(to bottom, var(--rule) 1px, transparent 1px) 0 0/28px 28px,
+        var(--panel); }
+.masthead-inner { max-width:920px; margin:0 auto; display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
+.wordmark { font-size:30px; font-weight:800; letter-spacing:-.033em; margin:0; }
+.wordmark span { color:var(--vector); }
+.tagline { color:var(--soft); font-size:14.5px; margin:0; flex:1 1 240px; }
+.repo { font-family:var(--mono); font-size:12px; color:var(--faint); text-decoration:none; border-bottom:1px solid var(--rule-strong); }
+.repo:hover { color:var(--vector); border-bottom-color:var(--vector); }
+
+.label { font-family:var(--mono); font-size:10.5px; font-weight:600;
+    letter-spacing:.16em; text-transform:uppercase; color:var(--faint); }
+
+.note { background:var(--panel); border:1px solid var(--rule); border-left:3px solid var(--vector);
+    border-radius:3px 10px 10px 3px; padding:13px 16px; margin:0 0 22px; font-size:14.5px; color:var(--soft); }
+.note b { color:var(--ink); }
+
+.status { display:inline-flex; align-items:center; gap:8px; }
+.status .dot { width:7px; height:7px; border-radius:50%; background:var(--keyword); }
+.status.on .dot { background:var(--final); }
+.status.busy .dot { animation:pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+.ask-row { display:flex; gap:10px; }
+#q { flex:1; font:inherit; font-size:17px; padding:15px 17px; color:var(--ink);
+     background:var(--panel); border:1px solid var(--rule-strong); border-radius:10px;
+     transition:border-color .15s, box-shadow .15s; }
+#q::placeholder { color:var(--faint); }
+#q:focus { outline:none; border-color:var(--focus); box-shadow:0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent); }
+#go { font:inherit; font-weight:650; font-size:15.5px; padding:0 24px; cursor:pointer;
+      color:var(--bg); background:var(--ink); border:1px solid var(--ink); border-radius:10px;
+      transition:transform .12s, opacity .15s; }
+#go:hover:not(:disabled) { transform:translateY(-1px); }
+#go:disabled { opacity:.45; cursor:default; }
+#go:focus-visible { outline:none; box-shadow:0 0 0 3px color-mix(in srgb, var(--focus) 35%, transparent); }
+
+.chips { display:flex; flex-wrap:wrap; gap:7px; margin:12px 0 8px; }
+.chip { font:inherit; font-size:13.5px; color:var(--soft); cursor:pointer; background:transparent;
+        border:1px solid var(--rule-strong); border-radius:999px; padding:6px 13px; transition:.14s; }
+.chip:hover { color:var(--vector); border-color:var(--vector); background:var(--vector-bg); }
+.chip:focus-visible { outline:none; box-shadow:0 0 0 3px color-mix(in srgb, var(--focus) 30%, transparent); }
+.hint { color:var(--faint); font-size:13px; margin:6px 0 0; }
+
+.verdict { display:none; margin:26px 0 0; padding:20px 24px; background:var(--panel);
+    border:1px solid var(--rule); border-left:4px solid var(--final);
+    border-radius:4px 12px 12px 4px; box-shadow:var(--lift); }
+.verdict.show { display:block; animation:rise .28s ease-out; }
+.verdict.refused { border-left-color:var(--refuse); }
+@keyframes rise { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }
+.verdict .label { color:var(--final); }
+.verdict.refused .label { color:var(--refuse); }
+.verdict p { margin:8px 0 0; font-size:17px; }
+.verdict .why { font-family:var(--mono); font-size:12.5px; color:var(--faint); margin-top:10px; }
+
+.stage { margin-bottom:22px; }
+.stage .lab { font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.08em;
+    text-transform:uppercase; padding-bottom:6px; margin-bottom:8px; border-bottom:1px solid var(--rule); }
+.stage.vec .lab { color:var(--vector); border-bottom-color:color-mix(in srgb, var(--vector) 35%, transparent); }
+.stage.kw  .lab { color:var(--keyword); border-bottom-color:color-mix(in srgb, var(--keyword) 35%, transparent); }
+.stage.fin .lab { color:var(--final); border-bottom-color:color-mix(in srgb, var(--final) 35%, transparent); }
+.row { font-family:var(--mono); font-size:12.5px; line-height:1.65; color:var(--soft);
+       padding:7px 0; border-bottom:1px dotted var(--rule); }
+.row:last-child { border-bottom:none; }
+.row .src { color:var(--ink); font-weight:600; }
+.row .sc { float:right; color:var(--faint); font-variant-numeric:tabular-nums; }
+#out { margin-top:30px; }
+
+footer { margin-top:46px; border-top:1px solid var(--rule); padding-top:16px;
+         color:var(--faint); font-size:13px; }
+footer a { color:var(--vector); }
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration:.001ms !important; transition-duration:.001ms !important; }
+}
+@media (max-width:620px) {
+    .wrap { padding:0 16px 72px; }
+    .masthead { padding:20px 16px 18px; }
+    .wordmark { font-size:25px; }
+    .ask-row { flex-direction:column; }
+    #go { padding:14px; }
+}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+    <div class="masthead-inner">
+        <h1 class="wordmark">rag<span>star</span></h1>
+        <p class="tagline">Hybrid retrieval, computed live in your browser.</p>
+        <a class="repo" href="https://github.com/Alistair77/ragstar">github.com/Alistair77/ragstar</a>
+    </div>
+</header>
+
+<div class="wrap">
+    <p class="note">
+        <b>This is the retrieval half, running for real.</b> Vector search, BM25,
+        Reciprocal Rank Fusion, cross-encoder reranking and the refusal gate all execute
+        in this tab — no server, no API keys. The scores below are computed now, not replayed.
+        <br><br>
+        Two steps need a multi-GB local LLM, which is not something to download into a web
+        page, so they are skipped here: writing the final sentence, and rewriting your query
+        first. That second one is visible — type <code>PTO policy</code> and it will refuse,
+        because the documents say "paid time off" and nothing says "PTO". The full version
+        expands the abbreviation before searching and finds it.
+        <br><br>
+        Verified against the Python pipeline: identical refusal decisions, and scores within
+        ~0.1 (this page runs q8-quantised weights; the real one runs float32).
+        <br><br>
+        <span class="status busy" id="status"><span class="dot"></span><span class="label" id="statusText">Starting…</span></span>
+    </p>
+
+    <div class="ask-row">
+        <input id="q" placeholder="Ask about remote work, expenses, incidents, onboarding…"
+               aria-label="Your question" disabled>
+        <button id="go" disabled>Search</button>
+    </div>
+    <div class="chips" id="chips"></div>
+    <p class="hint">First visit downloads two small models (~30&nbsp;MB), then everything is instant and offline.</p>
+
+    <section class="verdict" id="verdict" aria-live="polite">
+        <span class="label" id="verdictLabel">Retrieved</span>
+        <p id="verdictText"></p>
+        <div class="why" id="verdictWhy"></div>
+    </section>
+
+    <div id="out"></div>
+
+    <footer>
+        Corpus: four fictional policy documents for a made-up company.
+        The full version — with grounded answer generation, streaming and clickable citations —
+        runs locally: <a href="https://github.com/Alistair77/ragstar">see the repo</a>.
+    </footer>
+</div>
+
+<script type="module">
+import { init, search, getData } from './app.js';
+
+const $ = id => document.getElementById(id);
+const statusEl = $('status'), statusText = $('statusText');
+const qEl = $('q'), goEl = $('go'), outEl = $('out');
+const verdict = $('verdict'), verdictLabel = $('verdictLabel'),
+      verdictText = $('verdictText'), verdictWhy = $('verdictWhy');
+
+const SAMPLES = [
+    'How much is the home office stipend?',
+    'What do I do when a SEV-1 incident happens?',
+    'How quickly must reviewers respond to a pull request?',
+    'What is the wifi password in the Tokyo office?',   // deliberately unanswerable
+];
+
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const preview = t => esc(t.trim().replace(/\s+/g,' ').slice(0,110)) + '…';
+
+function rows(list, key) {
+    if (!list.length) return '<div class="row">nothing scored above zero</div>';
+    return list.map(r => `<div class="row"><span class="src">${esc(r.source)}</span>
+        <span class="sc">score ${r[key].toFixed(3)}</span><br>${preview(r.text)}</div>`).join('');
+}
+
+function render(res) {
+    const floor = getData().refuse_below_rerank;
+    verdict.classList.toggle('refused', res.refused);
+    verdictLabel.textContent = res.refused ? 'Refused' : 'Retrieved';
+    verdictText.textContent = res.refused
+        ? 'Nothing in these documents is relevant enough to answer that.'
+        : 'Good evidence found — these passages are what the model would be given.';
+    verdictWhy.textContent = res.refused
+        ? `best rerank score ${res.best.toFixed(2)} is below the floor of ${floor} → refused without calling any model`
+        : `best rerank score ${res.best.toFixed(2)} clears the floor of ${floor}`;
+    verdict.classList.add('show');
+
+    outEl.innerHTML = `
+        <div class="stage vec"><div class="lab">1 · Vector search — found by meaning</div>${rows(res.vector.slice(0,3),'score')}</div>
+        <div class="stage kw"><div class="lab">2 · Keyword search — found by exact words</div>${rows(res.bm25.slice(0,3),'score')}</div>
+        <div class="stage fin"><div class="lab">3 · After reranking — the ${res.reranked.length} best</div>${rows(res.reranked,'rerank_score')}</div>`;
+}
+
+async function run(text) {
+    if (text) qEl.value = text;
+    const query = qEl.value.trim();
+    if (!query) return;
+    goEl.disabled = true; goEl.textContent = 'Searching…';
+    statusEl.classList.add('busy');
+    try {
+        render(await search(query));
+    } catch (err) {
+        verdict.classList.add('show');
+        verdictLabel.textContent = 'Error';
+        verdictText.textContent = String(err);
+        verdictWhy.textContent = '';
+    } finally {
+        goEl.disabled = false; goEl.textContent = 'Search';
+        statusEl.classList.remove('busy');
+    }
+}
+
+goEl.addEventListener('click', () => run());
+qEl.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+
+$('chips').innerHTML = SAMPLES.map(s => `<button class="chip">${esc(s)}</button>`).join('');
+document.querySelectorAll('.chip').forEach(c =>
+    c.addEventListener('click', () => run(c.textContent)));
+
+init(msg => { statusText.textContent = msg; })
+    .then(() => {
+        statusEl.classList.remove('busy');
+        statusEl.classList.add('on');
+        qEl.disabled = false; goEl.disabled = false;
+        qEl.focus();
+    })
+    .catch(err => { statusText.textContent = 'Failed to load: ' + err; });
+</script>
+</body></html>
