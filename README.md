@@ -4,6 +4,12 @@
 
 No API keys. No Pinecone. No OpenAI. Every model runs locally.
 
+### ▶ [Try the retrieval demo in your browser](https://alistair77.github.io/ragstar/) — nothing to install
+
+Vector search, BM25, RRF, cross-encoder reranking and the refusal gate all run **in the page**, in WASM. The scores it shows are computed live, not replayed — verified against this Python pipeline (identical refusal decisions, scores within ~0.1; the browser runs q8-quantised weights, local runs float32).
+
+Answer generation and query rewriting are absent there, because both need a multi-GB LLM. Clone the repo for those.
+
 ---
 
 ## 🚀 Quick start
