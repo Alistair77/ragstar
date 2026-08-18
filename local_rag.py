@@ -34,6 +34,16 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 TOP_K_HYBRID = 10          # how many candidates each retriever returns
 TOP_K_RERANK = 4           # how many survive reranking and reach the LLM
+# Of the TOP_K_RERANK chunks the LLM sees, this many are ALWAYS shown as
+# [Source N] regardless of score — the top slots are load-bearing even when
+# reranking is off (no rerank_score to judge by). Only the last slot is
+# conditional; see PROMPT_SOURCES_WEAK_FLOOR below.
+PROMPT_SOURCES_GUARANTEED = TOP_K_RERANK - 1
+# Score floor for that conditional last source. Deliberately looser than
+# REFUSE_BELOW_RERANK (-6.0): that constant decides whether to answer at all,
+# this one only trims a borderline 4th citation once we've already committed
+# to answering. -1.0 keeps "plausible but not great" and drops "clearly off-topic".
+PROMPT_SOURCES_WEAK_FLOOR = -1.0
 # Refuse to answer when the best reranked chunk scores below this floor — nothing
 # retrieved is relevant enough to ground an answer. Measured on the demo corpus:
 # real answers score +6..+9 (a weak-but-valid match hit -1.1); unanswerable
@@ -327,10 +337,10 @@ class LocalHybridRAG:
         The UI reads the same list, so what gets highlighted is always what the
         model actually read.
         """
-        # Keep the top 3 unconditionally; a 4th only if it is not clearly weak.
         # .get() keeps this safe when reranking is off (no rerank_score key).
         return [c for i, c in enumerate(chunks)
-                if i < 3 or c.get("rerank_score", 0) > -1]
+                if i < PROMPT_SOURCES_GUARANTEED
+                or c.get("rerank_score", 0) > PROMPT_SOURCES_WEAK_FLOOR]
 
     def _build_prompt(self, query: str, chunks: list[dict]) -> str | None:
         """Build the grounded prompt, or return None when we must refuse.
