@@ -22,7 +22,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import json
 import re
-import asyncio
 from typing import List
 
 from local_rag import LocalHybridRAG
@@ -77,8 +76,11 @@ def extract_questions_from_text(text: str) -> List[str]:
     # Limit to reasonable number
     return questions[:5]
 
-def update_progress(status: str, progress: int, message: str = ""):
-    """Update global ingestion progress"""
+def update_progress(status: str, progress: int | None, message: str = ""):
+    """Update global ingestion progress. `progress=None` means indeterminate:
+    ingest() does chunking, embedding, and indexing in one blocking call with
+    no internal progress hooks, so there is no real percentage to report while
+    it runs."""
     global ingestion_progress
     ingestion_progress = {
         "status": status,
@@ -193,39 +195,17 @@ async def perform_ingestion():
     # was right to fail the build over it.
     global rag
     try:
-        # Update progress
-        update_progress("processing", 10, "Scanning documents...")
-        await asyncio.sleep(0.1)  # Allow UI to update
-        
-        # Get list of files to process
         doc_files = list(DOCS_DIR.glob("*.md")) + list(DOCS_DIR.glob("*.txt"))
-        update_progress("processing", 20, f"Found {len(doc_files)} documents to process")
-        await asyncio.sleep(0.1)
-        
-        # Initialize RAG instance if needed
+        update_progress("processing", None, f"Processing {len(doc_files)} documents...")
+
         if rag is None:
             rag = LocalHybridRAG()
-        
-        # Update progress for chunking
-        update_progress("processing", 30, "Chunking documents...")
-        await asyncio.sleep(0.1)
-        
-        # Call ingest (this does the actual work)
+
+        # Blocking: chunks, embeds, and indexes everything in one call.
         chunks = rag.ingest()
-        
-        # Update progress for embedding
-        update_progress("processing", 60, f"Creating embeddings for {len(chunks)} chunks...")
-        await asyncio.sleep(0.1)
-        
-        # Update progress for BM25
-        update_progress("processing", 80, "Building search indexes...")
-        await asyncio.sleep(0.1)
-        
-        # Complete
-        update_progress("processing", 100, f"✅ Successfully processed {len(chunks)} chunks from {len(doc_files)} documents")
-        await asyncio.sleep(0.2)
-        update_progress("complete", 100, f"Ready! Processed {len(chunks)} chunks.")
-        
+
+        update_progress("complete", 100, f"Ready! Processed {len(chunks)} chunks from {len(doc_files)} documents.")
+
     except Exception as e:
         update_progress("error", 0, f"❌ Error during ingestion: {str(e)}")
 
@@ -586,6 +566,8 @@ body {
 .progress-container { margin-top:14px; }
 .progress-bar { height:3px; background:var(--rule); border-radius:2px; overflow:hidden; }
 .progress-fill { height:100%; width:0; background:var(--vector); transition:width .3s ease; }
+.progress-fill.indeterminate { width:100%; animation:progress-pulse 1.2s ease-in-out infinite; }
+@keyframes progress-pulse { 0%,100% { opacity:.3; } 50% { opacity:1; } }
 .progress-text { font-family:var(--mono); font-size:11.5px; color:var(--faint); margin-top:7px; }
 
 /* Respect users who asked the OS for less motion. */
@@ -868,18 +850,24 @@ function startProgressPolling() {
 }
 
 function updateProgressUI(percent, message) {
-    progressFill.style.width = percent + '%';
+    if (percent === null || percent === undefined) {
+        progressFill.classList.add('indeterminate');
+        progressFill.style.width = '';  // let the .indeterminate CSS rule set width
+    } else {
+        progressFill.classList.remove('indeterminate');
+        progressFill.style.width = percent + '%';
+    }
     progressText.textContent = message || '';
 }
 
 function updateStatus(status, message) {
-    statusBar.className = `status-bar status-${status}`;
+    // .busy / .error are the only status modifiers the CSS (.status.busy .dot,
+    // .status.error .dot) actually defines — this used to target classes from
+    // a pre-redesign markup (.status-bar, .status-indicator) that no longer
+    // exist, so every call threw and silently killed the ingest button.
+    const modifier = status === 'processing' ? ' busy' : status === 'error' ? ' error' : '';
+    statusBar.className = 'status label' + modifier;
     statusText.textContent = message;
-    
-    // Update indicator color
-    const indicator = statusBar.querySelector('.status-indicator');
-    indicator.className = 'status-indicator';
-    if (status) indicator.classList.add(`status-${status}`);
 }
 
 // Question asking
