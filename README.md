@@ -77,13 +77,14 @@ That's it. Everything else is detail.
 hybrid-rag/
 │
 ├── local_rag.py      ⭐ THE BRAIN — all 6 stages, every setting    (523 lines)
-├── demo_app.py       🖥️  THE FACE — web server + browser UI       (1091 lines)
+├── demo_app.py       🖥️  THE FACE — FastAPI server, 8 endpoints    (334 lines)
 │
 ├── rrf.py            🔀 Merges 2 ranked lists into 1                (47 lines)
 ├── faithfulness.py   ⚖️  Grades answers for hallucination          (151 lines)
 ├── eval_rag.py       📊 Scores the system on 10 known questions    (232 lines)
 ├── test_pipeline.py  ✅ 8 unit tests, no models required           (286 lines)
 │
+├── static/           🎨 HTML/CSS/JS for the demo_app.py UI
 ├── demo_docs/        📄 4 fake company docs → 23 chunks
 ├── assets/           🖼️  README screenshots
 └── requirements.txt  📦 8 dependencies
@@ -94,7 +95,8 @@ hybrid-rag/
 | File | Its one job | Open it when… |
 |---|---|---|
 | **`local_rag.py`** | The whole pipeline + every tunable number | you want to change behaviour |
-| **`demo_app.py`** | FastAPI server, HTML/CSS/JS, 8 endpoints | you want to change the UI |
+| **`demo_app.py`** | FastAPI server, 8 endpoints | you want to change an endpoint |
+| **`static/`** | `index.html` + `app.js` for the browser UI | you want to change the UI |
 | **`rrf.py`** | One function: `reciprocal_rank_fusion()` | you want to understand merging |
 | **`faithfulness.py`** | Second LLM call that grades the first | you care about hallucination |
 | **`eval_rag.py`** | Golden dataset + hit-rate/MRR scoring | you want to measure quality |
@@ -457,7 +459,7 @@ It failed all three bad answers and **named the offending claim** each time. It 
 | Answers nonsense confidently | Weak chunks reaching the LLM | Raise the threshold |
 | Can't find obvious things | Question wording ≠ document wording | Rewriting helps; check chunk size |
 | Server won't start | Port 8100 busy | `lsof -ti tcp:8100` |
-| Blank page, buttons dead | JS error | Browser console; check Python `\n` escapes in embedded JS |
+| Blank page, buttons dead | JS error | Browser console; check `static/app.js` |
 | Very slow first query | Models loading | Normal — subsequent queries are cached |
 
 ---
