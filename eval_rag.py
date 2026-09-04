@@ -215,7 +215,7 @@ def full_report(rag: LocalHybridRAG | None = None):
 
     ret = evaluate_retrieval(rag, GOLDEN_DATASET, k=5)
     evaluate_retrieval_by_difficulty(rag, GOLDEN_DATASET, k=5)
-    faith = evaluate_faithfulness(rag, GOLDEN_DATASET[:5])
+    faith = evaluate_faithfulness(rag, GOLDEN_DATASET)
 
     print(f"\n{'=' * 74}")
     print("SUMMARY")
