@@ -14,7 +14,7 @@ Usage:
 import re
 import ollama
 
-OLLAMA_MODEL = "qwen3b-128k"
+OLLAMA_MODEL = "qwen2.5:3b"
 
 JUDGE_PROMPT = """You are an expert faithfulness judge with STRICT criteria. You MUST reject ANY answer that contains hallucinated information: invented details, dates, or amounts, or claims that go beyond or contradict the sources.
 

@@ -18,7 +18,7 @@ Answer generation and query rewriting are absent there, because both need a mult
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-ollama pull qwen3b-128k
+ollama pull qwen2.5:3b
 
 python demo_app.py          # web UI  → http://localhost:8100
 ```
@@ -472,7 +472,7 @@ It failed all three bad answers and **named the offending claim** each time. It 
 | Vector index | NumPy matrix | your RAM |
 | Keyword index | `rank_bm25` | your RAM |
 | Reranker | `ms-marco-MiniLM-L-6-v2` | your CPU |
-| LLM | Ollama `qwen3b-128k` | your machine |
+| LLM | Ollama `qwen2.5:3b` | your machine |
 | Web | FastAPI + vanilla JS | localhost |
 
 **Zero API keys. Zero cloud. Zero cost per query.**

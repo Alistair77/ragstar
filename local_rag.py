@@ -56,8 +56,8 @@ REFUSAL_MESSAGE = "I could not find that in the documents."
 EMBED_MODEL = "all-MiniLM-L6-v2"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Tested qwen2.5:0.5b (fast) — too weak, said "I could not find that" on questions
-# whose answer WAS retrieved. qwen3b is the smallest model that answers reliably.
-OLLAMA_MODEL = "qwen3b-128k"
+# whose answer WAS retrieved. qwen2.5:3b is the smallest one that answers reliably.
+OLLAMA_MODEL = "qwen2.5:3b"
 
 # Speed switch. When False we SKIP the cross-encoder entirely — the model is
 # never loaded (faster startup) and never runs (faster per-query). BUT: testing
@@ -170,13 +170,23 @@ class LocalHybridRAG:
         if not USE_QUERY_REWRITE or not query.strip():
             return query
 
+        # Few-shot, not a rule list. Describing the rules inline ("expand
+        # abbreviations (PTO -> paid time off)") made qwen2.5:3b paste that
+        # example text straight into its answer: "How much does the home office
+        # stipend cost? (PTO = paid time off, PR = pull request)". That polluted
+        # query dropped the rerank score from +8.9 to +3.1 and then confused
+        # generation into refusing a question whose answer was in front of it.
+        # Showing the transformation instead of describing it fixes the parroting:
+        # the model copies the SHAPE of the examples, not their contents.
         prompt = (
-            "Rewrite the question below so it is easy to search.\n"
-            "- fix spelling mistakes\n"
-            "- expand abbreviations (PTO -> paid time off, PR -> pull request)\n"
-            "- keep the original keywords, add no new facts\n"
-            "Reply with the rewritten question ONLY. No explanation, no quotes.\n\n"
-            f"Question: {query}\n\n"
+            "Rewrite each question so it is easy to search: fix spelling, write "
+            "abbreviations out in full, keep the original keywords, invent nothing.\n"
+            "Reply with the rewritten question only.\n\n"
+            "Question: wat is teh PTO polcy\n"
+            "Rewritten: What is the paid time off policy?\n\n"
+            "Question: how fast PR review\n"
+            "Rewritten: How quickly are pull requests reviewed?\n\n"
+            f"Question: {query}\n"
             "Rewritten:"
         )
         try:
@@ -370,12 +380,21 @@ class LocalHybridRAG:
         # Keep this SIMPLE. Small local models follow short, plain instructions
         # far better than long rule-lists — an over-constrained prompt makes them
         # parrot the template ("[SOURCE N] → EXACT text") or refuse to answer.
+        # Sources FIRST, then the rules, then the question. Measured, not guessed:
+        # with the "if not in the sources, say ..." escape hatch placed BEFORE
+        # the sources, qwen2.5:3b took the exit on "How much is the home office
+        # stipend?" — refusing at rerank +8.9 with "$1,500" sitting in Source 1.
+        # Truncation was ruled out: the prompt is ~350 tokens against a 32k
+        # window, and raising num_ctx to 8192 changed nothing. Deleting the
+        # escape hatch also fixed it, but that strips the model's only way to
+        # decline when a mid-scoring chunk clears the gate without holding the
+        # answer. Evidence before rules keeps the escape hatch AND answers.
         prompt = (
-            "Answer the question using only the sources below.\n"
-            "Cite sources inline like [Source 1].\n"
-            f"If the answer is not in the sources, say \"{REFUSAL_MESSAGE}\"\n\n"
-            f"Question: {query}\n\n"
             f"Sources:\n{context}\n\n"
+            "Using only the sources above, answer the question. "
+            "Cite sources inline like [Source 1]. "
+            f"If the sources do not contain the answer, say \"{REFUSAL_MESSAGE}\"\n\n"
+            f"Question: {query}\n"
             "Answer:"
         )
         return prompt
