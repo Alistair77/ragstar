@@ -421,16 +421,20 @@ Easy 4/4 · Medium 3/3 · Hard 3/3
 - **Hit-rate** = was the right chunk found at all?
 - **MRR** = 1.000 means it was always ranked **#1**, not merely present
 
-**Faithfulness** (LLM-as-Judge, first 5 questions):
+**Faithfulness** (LLM-as-Judge, all 10 questions):
 
 ```
-Faithfulness rate:  100%  (5/5)
-Average score:      1.00
+Faithfulness rate:  90%  (9/10)
+Average score:      0.90
 ```
 
-Every cited claim in all 5 answers is supported by the source it points at.
+Nine of ten answers cite a source for every claim, and every cited claim checks out against the passage it points at.
 
-### ❓ "How do you know that 100% is real?"
+**The one miss is not an invented fact.** It is *"Can I expense a business class flight to Tokyo?"*, and the judge's reason was **no `[Source N]` citations found** — the model declined to answer with a citation. That question is the one genuinely borderline case in the set: its best passage scores only **−1.1** on the reranker. A refusal is not a hallucination, but this metric cannot tell them apart, so it counts against the score. (Telling them apart is what the refusal eval is for.)
+
+> This used to read **100% (5/5)**, measured on the first five questions with the previous model, `qwen3b-128k`. Two things changed since: the eval now covers all ten, and the model is now `qwen2.5:3b`. It is tempting to say widening the eval exposed the miss — **that would be wrong.** The business-class question is #3, so it was inside the original five and passed then. The five newly added questions all pass. The drop comes from the model swap.
+
+### ❓ "How do you know this number is real?"
 
 **Because the broken version also said 100%.**
 
