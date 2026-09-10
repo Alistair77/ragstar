@@ -27,8 +27,8 @@ python demo_app.py          # web UI  → http://localhost:8100
 |---|---|---|
 | `python demo_app.py` | Web UI, streaming answers | ~10s to start |
 | `python local_rag.py` | 5 demo questions in the terminal | ~1 min |
-| `python local_rag.py --eval` | Full eval: 10 questions + metrics | ~3 min |
-| `python test_pipeline.py` | 8 unit tests (no models needed) | <1s |
+| `python local_rag.py --eval` | Full eval: 18 questions + metrics | several minutes |
+| `python test_pipeline.py` | 9 unit tests (no models needed) | <1s |
 
 ---
 
@@ -76,13 +76,13 @@ That's it. Everything else is detail.
 ```
 hybrid-rag/
 │
-├── local_rag.py      ⭐ THE BRAIN — all 6 stages, every setting    (523 lines)
-├── demo_app.py       🖥️  THE FACE — FastAPI server, 8 endpoints    (334 lines)
+├── local_rag.py      ⭐ THE BRAIN — all 6 stages, every setting    (565 lines)
+├── demo_app.py       🖥️  THE FACE — FastAPI server, 8 endpoints    (335 lines)
 │
 ├── rrf.py            🔀 Merges 2 ranked lists into 1                (47 lines)
 ├── faithfulness.py   ⚖️  Grades answers for hallucination          (151 lines)
-├── eval_rag.py       📊 Scores the system on 10 known questions    (232 lines)
-├── test_pipeline.py  ✅ 8 unit tests, no models required           (286 lines)
+├── eval_rag.py       📊 Scores the system on 18 known questions    (371 lines)
+├── test_pipeline.py  ✅ 9 unit tests, no models required           (314 lines)
 │
 ├── static/           🎨 HTML/CSS/JS for the demo_app.py UI
 ├── demo_docs/        📄 4 fake company docs → 23 chunks
@@ -99,7 +99,7 @@ hybrid-rag/
 | **`static/`** | `index.html` + `app.js` for the browser UI | you want to change the UI |
 | **`rrf.py`** | One function: `reciprocal_rank_fusion()` | you want to understand merging |
 | **`faithfulness.py`** | Second LLM call that grades the first | you care about hallucination |
-| **`eval_rag.py`** | Golden dataset + hit-rate/MRR scoring | you want to measure quality |
+| **`eval_rag.py`** | Golden set + retrieval, faithfulness and refusal scoring | you want to measure quality |
 | **`test_pipeline.py`** | Fast tests using fake clients | you changed anything |
 
 > 💡 **Why so few files?** This used to have a second, parallel cloud version (Pinecone + Cohere) — 11 files that nothing imported and that needed API keys. Deleted. **One working path beats two half-paths.**
@@ -389,7 +389,7 @@ Both the prompt and the UI read from one function, `_prompt_sources()`, so they 
 ## 🧪 Tests
 
 ```bash
-python test_pipeline.py   # 8 tests, <1 second, no models, no Ollama
+python test_pipeline.py   # 9 tests, <1 second, no models, no Ollama
 ```
 
 | Test | Proves |
@@ -402,6 +402,7 @@ python test_pipeline.py   # 8 tests, <1 second, no models, no Ollama
 | `test_cache_skips_repeat_work` | Same question = **1** LLM call, not 2 |
 | `test_decompose_query_guards` | Off by default; bad splits rejected |
 | `test_endpoints_share_retrieval_path` | `/ask` returns exactly what `/ask-stream` streams |
+| `test_classify_reply_separates_refusal_hedge_answer` | A reply that refuses *and* answers is a hedge, not a pass |
 
 **Why fake clients instead of the real model?** Tests you won't run are worthless. These run in **milliseconds**, so they run every time.
 
@@ -452,6 +453,45 @@ So a passing score proves nothing on its own. **A grader that can only say "pass
 It failed all three bad answers and **named the offending claim** each time. It can say "no" — so its "yes" is worth something.
 
 > 🎓 **The lesson:** a metric that silently measures nothing is worse than no metric — it buys false confidence. **Always prove your test can fail before you believe it passes.**
+
+---
+
+**Refusal** — does it decline exactly when it should? (all 18 questions: 10 answerable, 8 that are not)
+
+```
+Correct:          15/18
+False refusals:    0/10   declined something answerable
+Missed refusals:   0/8    answered something uncovered
+Hedges:            3/18   refused and answered at once
+```
+
+The eight should-refuse questions were **grep-checked against the documents before being written**. That caught two traps: *sick days* and *parking* both look unanswerable, and both appear in the handbook. Writing them in as "should refuse" would have baked wrong answers into the ground truth.
+
+**Nothing uncovered got answered, and nothing covered got refused.** The hedges are the real finding:
+
+| Hedged question | What the documents actually say |
+|---|---|
+| Can I claim both internet reimbursement and a co-working membership? | **cannot** claim both |
+| Can I expense alcohol on a solo business trip? | **only** at team events and client dinners |
+| Can I expense a business class flight to Tokyo? | **requires** VP approval |
+
+All three correct answers are restrictions. The model finds "no, but…" hard to say cleanly, so it opens with the refusal sentence and then answers anyway. The first-ever live run of this project tripped on the same *claim both* question.
+
+### ❓ "Why not just rely on the −6.0 gate?"
+
+Because on the hardest question in the set, **the gate never fired**:
+
+| Question | Best score | Who refused |
+|---|---|---|
+| How much is the gym membership reimbursement? | **−0.38** | the **model** |
+| How much is the annual performance bonus? | **−4.87** | the **model** |
+| What is the relocation allowance for new hires? | **−6.38** | the gate, with **0.38** to spare |
+
+The gym question retrieves the co-working reimbursement rule, which sits right next to a dollar amount, and scores **−0.38**. That is *higher* than the business-class question (**−1.1**), which the documents genuinely answer. The two ranges overlap, so **no threshold can separate them** — moving it to reject one would reject the other.
+
+What caught the gym question was the prompt's own instruction to say *"I could not find that"* when the sources lack the answer. An earlier bug fix nearly deleted that line, because removing it also made a wrongly-refused question answer. This eval is the evidence it has to stay.
+
+> 🎓 **The lesson:** the gate is measured and worth having, but one score cannot tell a near-miss from a real answer. The defence is **layered** — the gate catches the obvious, the model's escape hatch catches the rest, and this eval is what shows both are actually working.
 
 ---
 

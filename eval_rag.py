@@ -1,10 +1,11 @@
 """
 RAG Evaluation Framework — measures retrieval quality and answer faithfulness.
 
-Three metrics:
+Four metrics:
   - hit_rate@k  : was the right chunk in the top k?
   - MRR@k       : rank of the first relevant chunk (mean reciprocal rank)
   - faithfulness: does the answer's cited claims match the source?
+  - refusal     : does it decline exactly when it should? (false / missed / hedged)
 
 Usage:
     python eval_rag.py
@@ -16,7 +17,7 @@ from dataclasses import dataclass, field
 
 import ollama
 
-from local_rag import LocalHybridRAG
+from local_rag import LocalHybridRAG, REFUSAL_MESSAGE, REFUSE_BELOW_RERANK
 from faithfulness import verify_faithfulness
 
 
@@ -26,6 +27,9 @@ class EvalCase:
     expected_phrase: str          # a snippet that MUST appear in the retrieved chunk
     expected_source: str          # which doc it should come from
     difficulty: str = "medium"    # easy / medium / hard
+    # True for questions the documents do NOT answer. The system passes only by
+    # refusing; expected_phrase and expected_source are left empty.
+    should_refuse: bool = False
 
 
 GOLDEN_DATASET: list[EvalCase] = [
@@ -89,7 +93,68 @@ GOLDEN_DATASET: list[EvalCase] = [
         expected_source="travel_and_expense_policy.md",
         difficulty="hard",
     ),
+
+    # ── Should REFUSE: questions the documents do not answer ───────────────
+    # Every topic below was grep-checked against demo_docs/ and has zero hits.
+    # That check earned its keep: "sick days" and "parking" both looked
+    # unanswerable and are not (the handbook grants unlimited sick leave, and
+    # parking is mentioned), so they were left out instead of being baked in as
+    # wrong ground truth.
+    #
+    # Difficulty here means how hard it is to REFUSE, not to answer:
+    #   easy    off-topic; nothing retrieved even looks relevant
+    #   medium  an HR topic the documents simply never cover
+    #   hard    a near-miss where retrieval WILL surface something plausible,
+    #           handing the model material to invent an answer from
+    EvalCase(
+        question="Who won the 2018 FIFA World Cup?",
+        expected_phrase="", expected_source="",
+        difficulty="easy", should_refuse=True,
+    ),
+    EvalCase(
+        question="Which dental insurance provider does the company use?",
+        expected_phrase="", expected_source="",
+        difficulty="medium", should_refuse=True,
+    ),
+    EvalCase(
+        question="What is the 401(k) employer match?",
+        expected_phrase="", expected_source="",
+        difficulty="medium", should_refuse=True,
+    ),
+    EvalCase(
+        question="How much is the annual performance bonus?",
+        expected_phrase="", expected_source="",
+        difficulty="medium", should_refuse=True,
+    ),
+    EvalCase(
+        question="What is the relocation allowance for new hires?",
+        expected_phrase="", expected_source="",
+        difficulty="medium", should_refuse=True,
+    ),
+    EvalCase(
+        # "office" appears in the handbook's home-office section.
+        question="Can I bring my dog to the office?",
+        expected_phrase="", expected_source="",
+        difficulty="hard", should_refuse=True,
+    ),
+    EvalCase(
+        # BM25 matches "Tokyo" in the travel policy's list of high-cost cities.
+        question="What is the wifi password in the Tokyo office?",
+        expected_phrase="", expected_source="",
+        difficulty="hard", should_refuse=True,
+    ),
+    EvalCase(
+        # BM25 matches "membership" in the co-working reimbursement rule, which
+        # sits right beside a dollar amount: prime material to invent from.
+        question="How much is the gym membership reimbursement?",
+        expected_phrase="", expected_source="",
+        difficulty="hard", should_refuse=True,
+    ),
 ]
+
+# Split once so each evaluator only receives cases it can meaningfully score.
+ANSWERABLE: list[EvalCase] = [c for c in GOLDEN_DATASET if not c.should_refuse]
+UNANSWERABLE: list[EvalCase] = [c for c in GOLDEN_DATASET if c.should_refuse]
 
 
 def _normalize(text: str) -> str:
@@ -208,24 +273,98 @@ def evaluate_faithfulness(rag: LocalHybridRAG, cases: list[EvalCase]):
     return {"faithfulness_rate": faithfulness_rate, "avg_score": avg_score}
 
 
+def classify_reply(answer: str) -> str:
+    """Sort a reply into "refused", "hedged" or "answered".
+
+    An exact-match check is not enough, and that is not hypothetical: the
+    borderline business-class question produced "I could not find that in the
+    documents. [Source 1] mentions economy class...". That is not equal to the
+    refusal string, so an equality check scored it as a correct answer. It is
+    neither a clean refusal nor a clean answer.
+
+    Tolerant of case, surrounding whitespace and a dropped trailing full stop.
+    """
+    text = _normalize(answer).lower().rstrip(".")
+    refusal = _normalize(REFUSAL_MESSAGE).lower().rstrip(".")
+    if text == refusal:
+        return "refused"
+    if refusal in text:
+        return "hedged"
+    return "answered"
+
+
+def evaluate_refusal(rag: LocalHybridRAG, cases: list[EvalCase]):
+    """Does the system decline exactly when it should?
+
+    Runs the real user-facing path (query_structured, query rewriting included)
+    over answerable AND unanswerable questions and scores both ways to fail:
+
+      false refusal   declined a question the documents do answer
+      missed refusal  answered a question the documents do not cover
+      hedge           said it could not find it, then answered anyway
+
+    For every refusal it also reports WHO refused: the -6.0 gate, which never
+    calls the LLM, or the model deciding for itself.
+    """
+    print(f"\n{'=' * 74}")
+    print("REFUSAL EVALUATION  (should it answer at all?)")
+    print(f"{'=' * 74}")
+
+    counts = {"correct": 0, "false_refusal": 0, "missed_refusal": 0, "hedge": 0}
+    for case in cases:
+        d = rag.query_structured(case.question)
+        verdict = classify_reply(d["answer"])
+        top = d["reranked"][0]["score"] if d["reranked"] else float("-inf")
+        who = "gate" if top < REFUSE_BELOW_RERANK else "model"
+
+        if verdict == "hedged":
+            outcome, mark = "hedge", "~"
+        elif case.should_refuse:
+            outcome, mark = ("correct", "✓") if verdict == "refused" else ("missed_refusal", "✗")
+        else:
+            outcome, mark = ("correct", "✓") if verdict == "answered" else ("false_refusal", "✗")
+        counts[outcome] += 1
+
+        expect = "refuse" if case.should_refuse else "answer"
+        got = f"refused ({who})" if verdict == "refused" else verdict
+        print(f"  {mark} expect {expect:<6}  got {got:<15} top={top:+6.2f}  {case.question[:46]}")
+
+    unanswerable = sum(1 for c in cases if c.should_refuse)
+    answerable = len(cases) - unanswerable
+    print(f"\n  ── Results ──")
+    print(f"  Correct:          {counts['correct']}/{len(cases)}")
+    print(f"  False refusals:   {counts['false_refusal']}/{answerable}   declined something answerable")
+    print(f"  Missed refusals:  {counts['missed_refusal']}/{unanswerable}   answered something uncovered")
+    print(f"  Hedges:           {counts['hedge']}/{len(cases)}   refused and answered at once")
+
+    return {**counts, "total": len(cases), "answerable": answerable, "unanswerable": unanswerable}
+
+
 def full_report(rag: LocalHybridRAG | None = None):
     if rag is None:
         rag = LocalHybridRAG()
         rag.ingest()
 
-    ret = evaluate_retrieval(rag, GOLDEN_DATASET, k=5)
-    evaluate_retrieval_by_difficulty(rag, GOLDEN_DATASET, k=5)
-    faith = evaluate_faithfulness(rag, GOLDEN_DATASET)
+    # Retrieval and faithfulness only make sense where an answer exists. An
+    # unanswerable case has an empty expected_phrase, and "" is a substring of
+    # every chunk, so passing one to hit_rate would score a guaranteed fake hit.
+    ret = evaluate_retrieval(rag, ANSWERABLE, k=5)
+    evaluate_retrieval_by_difficulty(rag, ANSWERABLE, k=5)
+    faith = evaluate_faithfulness(rag, ANSWERABLE)
+    refusal = evaluate_refusal(rag, GOLDEN_DATASET)
 
     print(f"\n{'=' * 74}")
     print("SUMMARY")
     print(f"{'=' * 74}")
-    print(f"  Hit-rate@5: {ret['hit_rate']:.1%}")
-    print(f"  MRR@5:      {ret['mrr']:.3f}")
-    print(f"  Faithful:   {faith['faithfulness_rate']:.0%}")
+    print(f"  Hit-rate@5:       {ret['hit_rate']:.1%}")
+    print(f"  MRR@5:            {ret['mrr']:.3f}")
+    print(f"  Faithful:         {faith['faithfulness_rate']:.0%}")
+    print(f"  Refusal correct:  {refusal['correct']}/{refusal['total']}")
+    print(f"  False refusals:   {refusal['false_refusal']}   "
+          f"Missed: {refusal['missed_refusal']}   Hedges: {refusal['hedge']}")
     print()
 
-    return {"retrieval": ret, "faithfulness": faith}
+    return {"retrieval": ret, "faithfulness": faith, "refusal": refusal}
 
 
 if __name__ == "__main__":

@@ -280,6 +280,27 @@ def test_endpoints_share_retrieval_path():
     print("test_endpoints_share_retrieval_path PASSED")
 
 
+def test_classify_reply_separates_refusal_hedge_answer():
+    """A reply that opens with the refusal sentence and then answers anyway is a
+    hedge: not a refusal, and not an answer.
+
+    This is the exact case a strict equality check silently passed. The
+    borderline business-class question produced "I could not find that in the
+    documents. [Source 1] mentions economy class...", which does not equal the
+    refusal string, so it was scored as a correct answer.
+    """
+    from eval_rag import classify_reply
+    from local_rag import REFUSAL_MESSAGE
+
+    assert classify_reply(REFUSAL_MESSAGE) == "refused"
+    # Tolerant of case, surrounding whitespace and a dropped full stop.
+    assert classify_reply("  " + REFUSAL_MESSAGE.rstrip(".").upper() + "  ") == "refused"
+    assert classify_reply(REFUSAL_MESSAGE + " [Source 1] mentions economy class.") == "hedged"
+    assert classify_reply("The stipend is $1,500. [Source 1]") == "answered"
+
+    print("test_classify_reply_separates_refusal_hedge_answer PASSED")
+
+
 if __name__ == "__main__":
     test_single_origin()
     test_no_overlap()
@@ -289,4 +310,5 @@ if __name__ == "__main__":
     test_cache_skips_repeat_work()
     test_decompose_query_guards()
     test_endpoints_share_retrieval_path()
+    test_classify_reply_separates_refusal_hedge_answer()
     print("\nAll unit tests passed!")
