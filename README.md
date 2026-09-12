@@ -29,6 +29,7 @@ python demo_app.py          # web UI  → http://localhost:8100
 | `python local_rag.py` | 5 demo questions in the terminal | ~1 min |
 | `python local_rag.py --eval` | Full eval: 18 questions + metrics | several minutes |
 | `python test_pipeline.py` | 9 unit tests (no models needed) | <1s |
+| `python calibrate.py` | Re-measure `REFUSE_BELOW_RERANK` for your own docs | ~1 min |
 
 ---
 
@@ -323,7 +324,7 @@ All in `local_rag.py`, lines 32–99.
 | `CHUNK_OVERLAP` | 50 | Saves sentences that land on a cut line. |
 | `TOP_K_HYBRID` | 10 | Enough for rerank to have real choice; cheap enough to be fast. |
 | `TOP_K_RERANK` | 4 | What reaches the LLM. More = noise buries the answer. |
-| `REFUSE_BELOW_RERANK` | **−6.0** | **Measured.** Sits in the empty gap between −1.1 and −11. |
+| `REFUSE_BELOW_RERANK` | **−6.0** | **Measured** by `calibrate.py`. The ranges overlap on near-misses (unanswerable up to −0.38, answerable down to −4.75) — no floor is perfect; −6.0 sits below both. Re-run `calibrate.py` on a new corpus. |
 | `CACHE_SIZE` | 256 | Covers any session; costs a few KB. |
 | `REWRITE_MAX_GROWTH` | 3 | A rewrite 3× longer = the model started explaining itself. |
 | `REWRITE_MAX_CHARS` | 120 | **Absolute floor.** Short queries *must* be allowed to grow. |
