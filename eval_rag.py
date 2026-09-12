@@ -19,6 +19,7 @@ import ollama
 
 from local_rag import LocalHybridRAG, REFUSAL_MESSAGE, REFUSE_BELOW_RERANK
 from faithfulness import verify_faithfulness
+from correctness import verify_correctness
 
 
 @dataclass
@@ -28,8 +29,13 @@ class EvalCase:
     expected_source: str          # which doc it should come from
     difficulty: str = "medium"    # easy / medium / hard
     # True for questions the documents do NOT answer. The system passes only by
-    # refusing; expected_phrase and expected_source are left empty.
+    # refusing; expected_phrase, expected_source and expected_answer are left empty.
     should_refuse: bool = False
+    # The correct answer in plain language, for the LLM-judge correctness check.
+    # Distinct from expected_phrase: that's a retrieval check (is this text in
+    # the chunk?); this is an answer check (does the generated answer say the
+    # right thing, in whatever words it picks?).
+    expected_answer: str = ""
 
 
 GOLDEN_DATASET: list[EvalCase] = [
@@ -38,60 +44,70 @@ GOLDEN_DATASET: list[EvalCase] = [
         expected_phrase="$1,500",
         expected_source="employee_handbook.md",
         difficulty="easy",
+        expected_answer="A one-time $1,500 home office setup stipend.",
     ),
     EvalCase(
         question="What do I do when a SEV-1 incident happens?",
         expected_phrase="page the Incident Commander and the Head of Security",
         expected_source="security_incident_policy.md",
         difficulty="easy",
+        expected_answer="Page the Incident Commander and the Head of Security.",
     ),
     EvalCase(
         question="Can I expense a business class flight to Tokyo?",
         expected_phrase="Business class requires VP approval",
         expected_source="travel_and_expense_policy.md",
         difficulty="medium",
+        expected_answer="Only with VP approval; otherwise no.",
     ),
     EvalCase(
         question="How quickly must reviewers respond to a pull request?",
         expected_phrase="within one business day",
         expected_source="engineering_onboarding.md",
         difficulty="easy",
+        expected_answer="Within one business day.",
     ),
     EvalCase(
         question="Can I claim both internet reimbursement and a co-working membership?",
         expected_phrase="cannot claim both",
         expected_source="employee_handbook.md",
         difficulty="easy",
+        expected_answer="No, you cannot claim both at the same time.",
     ),
     EvalCase(
         question="What is the learning and development budget?",
         expected_phrase="$2,000",
         expected_source="employee_handbook.md",
         difficulty="medium",
+        expected_answer="$2,000.",
     ),
     EvalCase(
         question="How many weeks of parental leave do new parents get?",
         expected_phrase="16 weeks",
         expected_source="employee_handbook.md",
         difficulty="medium",
+        expected_answer="16 weeks.",
     ),
     EvalCase(
         question="What happens if customer personal data is exposed?",
         expected_phrase="notify affected customers within 72 hours",
         expected_source="security_incident_policy.md",
         difficulty="hard",
+        expected_answer="Affected customers must be notified within 72 hours.",
     ),
     EvalCase(
         question="Can I expense alcohol on a solo business trip?",
         expected_phrase="Alcohol is reimbursable only during team events and client dinners",
         expected_source="travel_and_expense_policy.md",
         difficulty="hard",
+        expected_answer="No — alcohol is only reimbursable at team events and client dinners, not solo trips.",
     ),
     EvalCase(
         question="What is the maximum hotel cost per night in San Francisco?",
         expected_phrase="$350 per night in high-cost cities",
         expected_source="travel_and_expense_policy.md",
         difficulty="hard",
+        expected_answer="$350 per night.",
     ),
 
     # ── Should REFUSE: questions the documents do not answer ───────────────
@@ -273,6 +289,52 @@ def evaluate_faithfulness(rag: LocalHybridRAG, cases: list[EvalCase]):
     return {"faithfulness_rate": faithfulness_rate, "avg_score": avg_score}
 
 
+def evaluate_correctness(rag: LocalHybridRAG, cases: list[EvalCase]):
+    """Is the answer actually right, not just faithful to its citations?
+
+    Faithfulness only checks that cited claims match the source text — an
+    answer can cite correctly and still pull the wrong number. This runs the
+    real user-facing path and grades the reply against expected_answer.
+
+    A refused or hedged reply is reported as such, not graded as "incorrect":
+    those are refusal-eval failures, and double-counting them here would make
+    a single bug look like two separate failures.
+    """
+    print(f"\n{'=' * 74}")
+    print("CORRECTNESS EVALUATION  (LLM-as-Judge vs. expected answer)")
+    print(f"{'=' * 74}")
+
+    counts = {"correct": 0, "incorrect": 0, "refused": 0, "hedged": 0}
+    for case in cases:
+        d = rag.query_structured(case.question)
+        verdict = classify_reply(d["answer"])
+
+        if verdict in ("refused", "hedged"):
+            counts[verdict] += 1
+            print(f"  ~ {verdict:<9} (not graded)  {case.question[:55]}")
+            continue
+
+        result = verify_correctness(d["answer"], case.expected_answer)
+        outcome = "correct" if result["is_correct"] else "incorrect"
+        counts[outcome] += 1
+        mark = "✓" if result["is_correct"] else "✗"
+        print(f"  {mark} {outcome:<9} {case.question[:55]}")
+        if not result["is_correct"]:
+            print(f"       ⚠  {result['reasoning']}")
+
+    graded = counts["correct"] + counts["incorrect"]
+    accuracy = counts["correct"] / graded if graded else 0.0
+
+    print(f"\n  ── Results ──")
+    print(f"  Correct:   {counts['correct']}/{graded} graded ({accuracy:.0%})")
+    print(f"  Incorrect: {counts['incorrect']}/{graded} graded")
+    if counts["refused"] or counts["hedged"]:
+        print(f"  Not graded — refused: {counts['refused']}, hedged: {counts['hedged']} "
+              f"(see refusal eval for these)")
+
+    return {**counts, "graded": graded, "accuracy": accuracy}
+
+
 def classify_reply(answer: str) -> str:
     """Sort a reply into "refused", "hedged" or "answered".
 
@@ -351,6 +413,7 @@ def full_report(rag: LocalHybridRAG | None = None):
     ret = evaluate_retrieval(rag, ANSWERABLE, k=5)
     evaluate_retrieval_by_difficulty(rag, ANSWERABLE, k=5)
     faith = evaluate_faithfulness(rag, ANSWERABLE)
+    correctness = evaluate_correctness(rag, ANSWERABLE)
     refusal = evaluate_refusal(rag, GOLDEN_DATASET)
 
     print(f"\n{'=' * 74}")
@@ -359,12 +422,14 @@ def full_report(rag: LocalHybridRAG | None = None):
     print(f"  Hit-rate@5:       {ret['hit_rate']:.1%}")
     print(f"  MRR@5:            {ret['mrr']:.3f}")
     print(f"  Faithful:         {faith['faithfulness_rate']:.0%}")
+    print(f"  Correct:          {correctness['correct']}/{correctness['graded']} graded "
+          f"({correctness['accuracy']:.0%})")
     print(f"  Refusal correct:  {refusal['correct']}/{refusal['total']}")
     print(f"  False refusals:   {refusal['false_refusal']}   "
           f"Missed: {refusal['missed_refusal']}   Hedges: {refusal['hedge']}")
     print()
 
-    return {"retrieval": ret, "faithfulness": faith, "refusal": refusal}
+    return {"retrieval": ret, "faithfulness": faith, "correctness": correctness, "refusal": refusal}
 
 
 if __name__ == "__main__":

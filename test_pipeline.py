@@ -301,6 +301,43 @@ def test_classify_reply_separates_refusal_hedge_answer():
     print("test_classify_reply_separates_refusal_hedge_answer PASSED")
 
 
+def test_split_sentences_handles_citations_and_abbreviated_amounts():
+    """The correctness judge grades one sentence at a time — grading a whole
+    multi-sentence paragraph in one call was measured to make qwen2.5:3b miss
+    facts it stated in the very first sentence. Splitting only works if
+    sentence boundaries survive dollar amounts and [Source N] citations.
+    """
+    from correctness import _split_sentences
+
+    text = ("Each employee gets a $2,000 budget. It does not roll over. "
+            "See policy [Source 1] for details.")
+    assert _split_sentences(text) == [
+        "Each employee gets a $2,000 budget.",
+        "It does not roll over.",
+        "See policy [Source 1] for details.",
+    ]
+    assert _split_sentences("   ") == []
+    assert _split_sentences("One sentence, no trailing space.") == [
+        "One sentence, no trailing space."
+    ]
+
+    print("test_split_sentences_handles_citations_and_abbreviated_amounts PASSED")
+
+
+def test_verify_correctness_skips_judge_when_no_expected_answer():
+    """An unanswerable EvalCase has expected_answer == "" — verify_correctness
+    must short-circuit before calling the model, the same way faithfulness.py
+    short-circuits on empty chunks.
+    """
+    from correctness import verify_correctness
+
+    result = verify_correctness("anything", "")
+    assert result["is_correct"] is True
+    assert result["correctness_score"] == 1.0
+
+    print("test_verify_correctness_skips_judge_when_no_expected_answer PASSED")
+
+
 if __name__ == "__main__":
     test_single_origin()
     test_no_overlap()
@@ -311,4 +348,6 @@ if __name__ == "__main__":
     test_decompose_query_guards()
     test_endpoints_share_retrieval_path()
     test_classify_reply_separates_refusal_hedge_answer()
+    test_split_sentences_handles_citations_and_abbreviated_amounts()
+    test_verify_correctness_skips_judge_when_no_expected_answer()
     print("\nAll unit tests passed!")

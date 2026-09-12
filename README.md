@@ -77,13 +77,15 @@ That's it. Everything else is detail.
 ```
 hybrid-rag/
 │
-├── local_rag.py      ⭐ THE BRAIN — all 6 stages, every setting    (565 lines)
-├── demo_app.py       🖥️  THE FACE — FastAPI server, 8 endpoints    (335 lines)
+├── local_rag.py      ⭐ THE BRAIN — all 6 stages, every setting    (567 lines)
+├── demo_app.py       🖥️  THE FACE — FastAPI server, 8 endpoints    (334 lines)
 │
 ├── rrf.py            🔀 Merges 2 ranked lists into 1                (47 lines)
-├── faithfulness.py   ⚖️  Grades answers for hallucination          (151 lines)
-├── eval_rag.py       📊 Scores the system on 18 known questions    (371 lines)
-├── test_pipeline.py  ✅ 9 unit tests, no models required           (314 lines)
+├── faithfulness.py   ⚖️  Grades citations for hallucination       (151 lines)
+├── correctness.py    ✔️  Grades answers against the right fact      (76 lines)
+├── calibrate.py      📏 Re-measures the refusal threshold          (108 lines)
+├── eval_rag.py       📊 Scores the system on 18 known questions    (436 lines)
+├── test_pipeline.py  ✅ 11 unit tests, no models required          (353 lines)
 │
 ├── static/           🎨 HTML/CSS/JS for the demo_app.py UI
 ├── demo_docs/        📄 4 fake company docs → 23 chunks
@@ -99,8 +101,10 @@ hybrid-rag/
 | **`demo_app.py`** | FastAPI server, 8 endpoints | you want to change an endpoint |
 | **`static/`** | `index.html` + `app.js` for the browser UI | you want to change the UI |
 | **`rrf.py`** | One function: `reciprocal_rank_fusion()` | you want to understand merging |
-| **`faithfulness.py`** | Second LLM call that grades the first | you care about hallucination |
-| **`eval_rag.py`** | Golden set + retrieval, faithfulness and refusal scoring | you want to measure quality |
+| **`faithfulness.py`** | Second LLM call that grades citations for hallucination | you care about hallucination |
+| **`correctness.py`** | Second LLM call that grades answers against the right fact | you care about wrong-but-cited answers |
+| **`calibrate.py`** | Re-measures `REFUSE_BELOW_RERANK` on your own docs | you swap in different documents |
+| **`eval_rag.py`** | Golden set + retrieval, faithfulness, correctness and refusal scoring | you want to measure quality |
 | **`test_pipeline.py`** | Fast tests using fake clients | you changed anything |
 
 > 💡 **Why so few files?** This used to have a second, parallel cloud version (Pinecone + Cohere) — 11 files that nothing imported and that needed API keys. Deleted. **One working path beats two half-paths.**
@@ -454,6 +458,28 @@ So a passing score proves nothing on its own. **A grader that can only say "pass
 It failed all three bad answers and **named the offending claim** each time. It can say "no" — so its "yes" is worth something.
 
 > 🎓 **The lesson:** a metric that silently measures nothing is worse than no metric — it buys false confidence. **Always prove your test can fail before you believe it passes.**
+
+---
+
+**Correctness** (LLM-as-Judge vs. a known-correct expected answer, the 10 answerable questions):
+
+```
+Correct:    9/9 graded (100%)
+Incorrect:  0/9 graded
+Not graded: 1 hedged (see refusal eval — it isn't scored as wrong here)
+```
+
+Faithfulness only asks "is every citation supported?" — an answer can cite correctly and still state the wrong number. This asks the other question: does the answer contain the actual expected fact (e.g. `"$2,000"`, `"16 weeks"`, `"cannot claim both"`)? `classify_reply` sorts out refusals and hedges first, so a correctly-refused question is never counted as an incorrect answer.
+
+**The first version of this judge was measured to be wrong, not just imperfect.** Asking `qwen2.5:3b` to grade a whole multi-sentence answer in one call and return `{score, reasoning}` as JSON: it scored *"Each employee has an annual learning budget of **$2,000**…"* as **not containing** `"$2,000"`, and separately echoed the prompt's own field-instruction text (`"one short sentence"`) back as its `reasoning` instead of writing one. That is not a borderline case — the fact is stated in the first six words of the answer. A 3B model asked to hold a whole paragraph in mind while also composing free-text justification measurably could not do both at once.
+
+**Fix:** split the answer into individual sentences and ask a yes/no question per sentence (`"Find the exact meaning of X inside this sentence"`), with no JSON or free-text reasoning required from the model at all. Measured before/after on the same four realistic cases:
+
+| | Whole-paragraph + JSON | Per-sentence yes/no |
+|---|---|---|
+| Correct classifications | 2/4 | 4/4 |
+
+Reasoning is now built in Python from whichever sentence matched, not asked of the model — the earlier failure was specifically the "explain yourself" step, and removing it removed the failure.
 
 ---
 
