@@ -459,23 +459,26 @@ It failed all three bad answers and **named the offending claim** each time. It 
 **Refusal** — does it decline exactly when it should? (all 18 questions: 10 answerable, 8 that are not)
 
 ```
-Correct:          15/18
+Correct:          17/18
 False refusals:    0/10   declined something answerable
 Missed refusals:   0/8    answered something uncovered
-Hedges:            3/18   refused and answered at once
+Hedges:            1/18   refused and answered at once
 ```
 
 The eight should-refuse questions were **grep-checked against the documents before being written**. That caught two traps: *sick days* and *parking* both look unanswerable, and both appear in the handbook. Writing them in as "should refuse" would have baked wrong answers into the ground truth.
 
-**Nothing uncovered got answered, and nothing covered got refused.** The hedges are the real finding:
+**Nothing uncovered got answered, and nothing covered got refused.** The hedges were the real finding — three questions whose correct answer is a *restriction* ("cannot claim both", "only at team events", "requires VP approval"). The model found "no, but…" hard to say cleanly: it opened with the refusal sentence and then answered anyway.
 
-| Hedged question | What the documents actually say |
-|---|---|
-| Can I claim both internet reimbursement and a co-working membership? | **cannot** claim both |
-| Can I expense alcohol on a solo business trip? | **only** at team events and client dinners |
-| Can I expense a business class flight to Tokyo? | **requires** VP approval |
+**Fix:** `_build_prompt` in `local_rag.py` now tells the model directly that a restriction or "no" is a real answer, and to only use the refusal sentence when the sources are silent on the topic entirely. Sources still come before the instructions in the prompt — moving the escape hatch ahead of the evidence had previously made the model refuse a real answer at rerank +8.9, so that ordering stays fixed.
 
-All three correct answers are restrictions. The model finds "no, but…" hard to say cleanly, so it opens with the refusal sentence and then answers anyway. The first-ever live run of this project tripped on the same *claim both* question.
+| | Before | After |
+|---|---|---|
+| Correct | 15/18 | 17/18 |
+| Hedges | 3/18 | 1/18 |
+| False refusals | 0/10 | 0/10 |
+| Missed refusals | 0/8 | 0/8 |
+
+Two of the three hedges are gone — *claim both* and *alcohol on a solo trip* now answer cleanly. The third, *business class to Tokyo*, still hedges: its own retrieved source states "Business class requires VP approval in advance" verbatim, and the model still opens with "I could not find that" before quoting it. That's a reading-comprehension miss at the weakest retrieval score in the set (rerank −4.75), not a prompt-ordering problem, so it's left as the one known miss rather than tuned further without evidence a change would fix it.
 
 ### ❓ "Why not just rely on the −6.0 gate?"
 

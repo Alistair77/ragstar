@@ -393,7 +393,9 @@ class LocalHybridRAG:
             f"Sources:\n{context}\n\n"
             "Using only the sources above, answer the question. "
             "Cite sources inline like [Source 1]. "
-            f"If the sources do not contain the answer, say \"{REFUSAL_MESSAGE}\"\n\n"
+            "A restriction, limit, or \"no\" is a real answer — state it plainly and "
+            "cite it, do not call it not found. "
+            f"Only say \"{REFUSAL_MESSAGE}\" when the sources are silent on the topic.\n\n"
             f"Question: {query}\n"
             "Answer:"
         )
